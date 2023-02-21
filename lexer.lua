@@ -131,17 +131,19 @@ local function lexer_lex(self)
                 token = char
                 pos = pos + 1
             else -- Double char op
-                token = string_sub(input, pos, pos+1) -- No need for boundary check
+                local mb = string_sub(input, pos, pos+1) -- No need for boundary check
                 local found = false
                 for i=1,#op do
-                    if token == op[i] then
-                        token = op[i]
-                        pos = pos + #token
+                    if mb == op[i] then
+                        token = mb
+                        pos = pos + #mb
                         found = true
                         break
                     end
                 end
-                if not found then pos = pos + 1 end
+                if not found then 
+                    pos = pos + 1 
+                end
             end
         else
             local i, j, numeric = lex_numeric(input, pos) -- Try get numeric literal
