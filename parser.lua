@@ -59,10 +59,10 @@ local parse_binary
 local parse_binary_
 
 -- Left recursion elimination
--- E := E + T
+-- E := E + T | T
 -- ==>
 --    E  := T E'
---    E' := nil | + E
+--    E' := nil | + E E'
 
 parse_binary = function(self, level)
     if level == nil then level = 1 end
