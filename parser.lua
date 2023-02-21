@@ -31,9 +31,21 @@ local function syntax_error(parser, message)
     error("syntax error: " .. message .. " at " .. parser.filename .. ":" .. parser.line)
 end
 
+local function unexpect(self, token)
+    if self.current == token then
+        syntax_error(self, "unexpected " .. token)
+    end
+end
+
 local function expect(parser, token)
     if parser.current ~= token then
         syntax_error(parser, "expecting " .. token)
+    end
+end
+
+local function syntax_assert(parser, cond, message)
+    if not cond then
+        syntax_error(parser, message)
     end
 end
 
@@ -57,6 +69,105 @@ local parse_parameters
 local parse_unary
 local parse_binary
 local parse_binary_
+local parse_code_block
+local parse_param_decl
+
+local if_ends = {"end", "else", "elseif"}
+
+parse_code_block = function(self, ends)
+    local handler = self.handler
+    local cond
+    local token
+    local ends_with
+    if ends == nil then ends = {"end"} end
+    while table_find(ends, self.current) ~= nil do
+        unexpect(self, nil)
+        token = self.current
+        if token == "if" then
+            take(self)
+            cond = parse_expr(self)
+            expect_and_take(self, "then")
+            handler.process_if(cond)
+            repeat
+                ends_with = parse_code_block(self, if_ends)
+                if ends_with == "end" then 
+                    handler.end_if(cond)
+                    break 
+                elseif ends_with == "elseif"
+                    cond = parse_expr(self)
+                    handler.process_elseif(cond)
+                elseif ends_with == "else" then
+                    handler.process_else()
+                end
+            end
+            goto continue
+        end
+
+        if token == "repeat" then
+            take(self)
+            handler.process_repeat()
+            parse_code_block(self)
+            handler.end_repeat()
+            goto continue
+        end
+
+        if token == "while" then
+            take(self)
+            cond = parse_expr(self)
+            expect_and_take(self, "do")
+            handler.process_while(cond)
+            parse_code_block(self)
+            handler.end_while()
+            goto continue
+        end
+
+        if token == "for" then
+            take(self)
+            local iterator_name = self.current
+            syntax_assert(type(iterator_name) ~= "string", "expecting iterator name, get " .. tostring(iterator_name))
+            take(self)
+            expect_and_take(self, "=")
+            local begin = parse_expr(self)
+            expect_and_take(self, ",")
+            local ends = parse_expr(self)
+            local step = 1
+            if self.current == "," then
+                take(self)
+                step = parse_expr(self)
+            end
+            expect_and_take(self, "do")
+            handler.process_for(iterator_name, begin, ends, step)
+            parse_code_block(self)
+            handler.end_for()
+            goto continue
+        end
+
+        if token == "function" then
+            take(self)
+            local function_name = take(self)
+            syntax_assert(type(iterator_name) ~= "string", "expecting function name, get " .. tostring(iterator_name))
+            expect_and_take("(")
+            local params = parse_param_decl(self)
+            expect_and_take(")")
+            handler.process_function_decl(function_name, params)
+            parse_code_block(self)
+            handler.end_function()
+            goto continue
+        end
+
+        local lvalue = parse_expr(self)
+        if self.current == "=" then -- assignment
+            take(self)
+            local rvalue = parse_expr(self)
+            handler.assign(lvalue, rvalue)
+        else
+            handler.expr_statement(lvalue)
+        end
+
+        ::continue::
+    end
+    return take(self)
+end
 
 -- Left recursion elimination
 -- E := E + T | T
@@ -166,8 +277,7 @@ local function test_expr()
     end
 
     local parser = Parser.new(code, handler)
-    parse_binary(parser)
-    -- assert(parse_binary(parser) == "(and 1 (+ (- (* 2 2) 3) (* (- 0.002) (not 255))))")
+    assert(parse_binary(parser) == "(and 1 (~ (+ (- (* 2 2) 3) (* (- 0.002) (not 1))) (~ 255)))")
 end
 
 test_expr()
