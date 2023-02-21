@@ -155,7 +155,6 @@ local function lexer_lex(self)
     end
 
     line_pos = line_pos + (pos - old_pos)
-
     return token, pos, line, line_pos
 end
 
@@ -186,8 +185,6 @@ local function lexer_test()
 
     while true do
         local token = Lexer.next(lexer)
-        print(token)
-
         if token == nil then return end
     end
 end
