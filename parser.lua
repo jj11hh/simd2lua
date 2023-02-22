@@ -1,4 +1,4 @@
-local pprint = require("pprint")
+-- local pprint = require("pprint")
 
 -- See also Page 22 in Programming in Lua, 4th Editor
 local binary_operators = {
@@ -18,6 +18,14 @@ local unary_operators = {
     { "not", "-", "#", "~"},
 }
 
+local valid_types = {
+    void = true,
+    table = true, array = true,
+    float = true, float2 = true, float3 = true, float4 = true,
+    int = true, int2 = true, int3 = true, int4 = true,
+    -- TODO: Matrix types
+}
+
 local Lexer = require("lexer")
 local take = Lexer.next
 
@@ -27,6 +35,10 @@ function Parser.new(input, handler)
     local self = Lexer.new(input) -- Inherit from lexer
     self.handler = handler
     return self
+end
+
+function Parser.set_handler(self, handler)
+    self.handler = handler
 end
 
 local function syntax_error(parser, message)
@@ -56,14 +68,9 @@ local function expect_and_take(parser, token)
     take(parser)
 end
 
-local function table_find(t, ele)
-    for i = 1,#t do
-        if ele == t[i] then return i end
-    end
-
-    return nil
-end
-
+local Utils = require("utils")
+local table2sexpr = Utils.table2sexpr
+local table_find = Utils.table_find
 local string_match = string.match
 
 local parse_atom
@@ -75,19 +82,12 @@ local parse_binary
 local parse_binary_
 local parse_code_block
 local parse_param_decl
-local is_identifier
 
 local if_ends = {"end", "else", "elseif"}
 
-is_identifier = function(token)
+local function is_identifier(token)
     return string_match(token, "^[a-zA-Z_][a-zA-Z0-9_]*") ~= nil
 end
-
-local valid_types = {
-    float = true, float2 = true, float3 = true, float4 = true,
-    int = true, int2 = true, int3 = true, int4 = true,
-    -- TODO: Matrix types
-}
 
 local function is_valid_type(token)
     return valid_types[token] == true
@@ -126,10 +126,11 @@ local function parse_variable_decl(self)
         init = parse_expr(self)
     end
 
-    self.handler.variable_decl(varname, attributes, vartype, init)
+    self.handler:decl_variable(varname, attributes, vartype, init)
 end
 
 parse_param_decl = function(self)
+    local handler = self.handler
     local params = {}
 
     while true do
@@ -141,15 +142,8 @@ parse_param_decl = function(self)
         
         local attributes = parse_attributes(self)
         local type_notation = parse_type_notation(self)
-
-        -- Type notation
-        local param = {
-            name = name, type = type_notation, attributes = attributes
-        }
-        params[#params+1] = param
+        params[#params+1] = handler:decl_param(name, attributes, type_notation)
     end
-
-    pprint(params)
 
     return params
 end
@@ -172,26 +166,26 @@ parse_code_block = function(self, ends, ends_with_nil)
             take(self)
             cond = parse_expr(self)
             expect_and_take(self, "then")
-            handler.process_if(cond)
+            handler:begin_if(cond)
             while true do
                 ends_with = parse_code_block(self, if_ends)
                 if ends_with == "end" then 
-                    handler.end_if(cond)
+                    handler:end_if(cond)
                     break 
                 elseif ends_with == "elseif" then
                     cond = parse_expr(self)
-                    handler.process_elseif(cond)
+                    handler:begin_elseif(cond)
                 elseif ends_with == "else" then
-                    handler.process_else()
+                    handler:begin_else()
                 end
             end
         elseif token == "while" then
             take(self)
             cond = parse_expr(self)
             expect_and_take(self, "do")
-            handler.process_while(cond)
+            handler:begin_while(cond)
             parse_code_block(self)
-            handler.end_while()
+            handler:end_while()
         elseif token == "for" then
             take(self)
             local iterator_name = self.current
@@ -207,9 +201,9 @@ parse_code_block = function(self, ends, ends_with_nil)
                 step = parse_expr(self)
             end
             expect_and_take(self, "do")
-            handler.process_for(iterator_name, begin, ends, step)
+            handler:begin_for(iterator_name, begin, ends, step)
             parse_code_block(self)
-            handler.end_for()
+            handler:end_for()
         elseif token == "function" then
             take(self)
             local function_name = take(self)
@@ -222,26 +216,30 @@ parse_code_block = function(self, ends, ends_with_nil)
             local attributes = parse_attributes(self)
             local return_type = parse_type_notation(self)
 
-            handler.process_function_decl(function_name, params, attributes, return_type)
+            handler:decl_function(function_name, params, attributes, return_type)
             parse_code_block(self)
-            handler.end_function()
+            handler:end_function()
         elseif token == "local" then
             parse_variable_decl(self)
         elseif token == "return" then
             take(self)
-            handler.return_val(parse_expr(self))
+            handler:return_val(parse_expr(self))
         else -- Function call or assignment
             local lvalue = parse_expr(self)
             if self.current == "=" then -- assignment
                 take(self)
                 local rvalue = parse_expr(self)
-                handler.assign(lvalue, rvalue)
+                handler:assign(lvalue, rvalue)
             else
-                handler.expr_statement(lvalue)
+                handler:expr_statement(lvalue)
             end
         end
     end
     return take(self)
+end
+
+function Parser.parse(self)
+    return parse_code_block(self, nil, true)
 end
 
 -- Left recursion elimination
@@ -270,7 +268,7 @@ parse_binary_ = function(self, level, ops, a)
     if table_find(ops, token) ~= nil then
         take(self)
         local b = parse_binary(self, level+1)
-        return parse_binary_(self, level, ops, handler.binary(token, a, b))
+        return parse_binary_(self, level, ops, handler:binary(token, a, b))
     else
         return a
     end
@@ -289,7 +287,7 @@ parse_unary = function(self, level)
 
     if table_find(ops, token) ~= nil then
         take(self)
-        return handler.unary(token, parse_unary(self, level+1))
+        return handler:unary(token, parse_unary(self, level+1))
     else
         return parse_unary(self, level+1)
     end
@@ -299,16 +297,20 @@ parse_atom = function(self)
     local token = self.current
     local handler = self.handler
     if token == "(" then
+        take(self)
         local expr = parse_expr(self)
-        expect_and_take(")")
-        return expr
+        expect_and_take(self, ")")
+        return parse_postfix(self, expr)
     elseif type(token) == "string" then
-        local id = handler.identifier(token)
+        local id = handler:identifier(token)
         take(self)
         return parse_postfix(self, id)
-    elseif type(token) == "number" or type(token) == "boolean" then
+    elseif type(token) == "number" then
         take(self)
-        return token
+        return handler:number_literal(token)
+    elseif type(token) == "boolean" then
+        take(self)
+        return handler:bool_literal(token)
     end
 
     syntax_error(self, "expecting atom, get " .. tostring(token))
@@ -337,17 +339,17 @@ parse_postfix = function(self, id)
         take(self)
         token = self.current
         take(self)
-        return handler.field_access(id, token)
+        return parse_postfix(self, handler:get_field(id, token))
     elseif token == "[" then
         take(self)
         local index = parse_expr(self)
         expect_and_take(self, "]")
-        return handler.index_access(id, index)
+        return parse_postfix(self, handler:get_index(id, index))
     elseif token == "(" then
         take(self)
         local parameters = parse_parameters(self)
         expect_and_take(self, ")")
-        return handler.call(id, parameters)
+        return parse_postfix(self, handler:call(id, parameters))
     end
 
     return id
@@ -358,52 +360,23 @@ end
 local function test_expr()
     local code = "1 and 2 * 2 - 3 + -2e-3 * not 1 ~ ~0xFF"
     local handler = {}
-    handler.binary = function (op, a, b)
+    handler.binary = function (_, op, a, b)
         local r = table.concat{"(", op, " ", a, " ", b, ")"}
         print(r)
         return r
     end
 
-    handler.unary = function (op, a)
+    handler.unary = function (_, op, a)
         local r = table.concat{"(", op, " ", a, ")"}
         print(r)
         return r
     end
 
+    handler.number_literal = function (_, i) return i end
+    handler.bool_literal = function (_, i) return i end
+
     local parser = Parser.new(code, handler)
     assert(parse_binary(parser) == "(and 1 (~ (+ (- (* 2 2) 3) (* (- 0.002) (not 1))) (~ 255)))")
-end
-
-local function table2sexpr(t)
-    if type(t) ~= "table" then return t end
-
-    local hash_count = 0
-    for k,v in pairs(t) do
-        if not (type(k) == "number" and k >= 1 and k <= #t) then
-            hash_count = hash_count + 1
-        end
-    end
-
-    local output = {}
-    local lbrace = "["
-    local rbrace = "]"
-
-    if hash_count == 0 then
-        lbrace = "("
-        rbrace = ")"
-    end
-
-    for i,v in ipairs(t) do
-        output[i] = table2sexpr(v)
-    end
-
-    for k,v in pairs(t) do
-        if not (type(k) == "number" and k >= 1 and k <= #t) then
-            output[#output+1] = k .. "=" .. table2sexpr(v)
-        end
-    end
-
-    return lbrace .. table.concat(output, " ") .. rbrace
 end
 
 local function test_function()
@@ -413,7 +386,7 @@ local function test_function()
             local output = {"(", key, " "}
             local args = {...}
 
-            for i=1,#args do
+            for i=2,#args do
                 output[#output+1] = table2sexpr(args[i])
                 output[#output+1] = " "
             end
@@ -431,22 +404,26 @@ local function test_function()
     setmetatable(handler, meta)
 
     local code = [[
-        function test1(i <inout> :int) :int
+        function test1(i <inout> :int) <pure> :int
             return i * i
         end
 
         function test2() :int
-            local temp :int = 2
+            local temp <const> :float4 = float4(1.0, 2.0 * 2.0, 3.0 % 4.0, 5.5)
             for i=1,10,2 do
-                temp = 3.0 + temp * temp.xyz
+                temp = 3.0 + temp * (temp).xyz ~ i
             end
-            return test1(3 + 3)
+            func(i * i)
+            math.sin(pow(i, 2.0))
+            return test1(3 + 3).xyzw[0]
         end
     ]]
 
     local parser = Parser.new(code, handler)
-    parse_code_block(parser, nil, true)
+    Parser.parse(parser)
 end
 
-test_expr()
-test_function()
+-- test_expr()
+-- test_function()
+
+return Parser
