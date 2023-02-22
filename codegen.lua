@@ -92,10 +92,10 @@ end
 
 local function cast_float_to_int(self, x)
     assert(x.type == "float")
-    if type(x.value) == "number" then
+    if x.constexpr then
         local value
         if x.value > 0 then value = floor(x.value) else value = ceil(x.value) end
-        return {type="int", value=value, code=x.code}
+        return {type="int", value=value, code=x.code, constexpr=true}
     end
     local reg = new_reg(self, "temp", "int")
     local code = {
@@ -110,7 +110,23 @@ local function cast_int_to_float(self, x)
     assert(x.type == "int")
     value = x.value
     if type(value) == "number" then value = value+0.0 end
-    return {type="float", value=value, code=x.code}
+    return {type="float", value=value, code=x.code, constexpr=x.constexpr}
+end
+
+local builtin_functions = {}
+
+function builtin_functions.int(self, input)
+    if input.type == "int" then
+        return input
+    end
+    return cast_float_to_int(self, input)
+end
+
+function builtin_functions.float(self, input)
+    if input.type == "float" then
+        return input
+    end
+    return cast_int_to_float(self, input)
 end
 
 local binfuncs = {
@@ -135,8 +151,38 @@ local compfuncs = {
     [">"]  = function(a, b) return a >  b end,
 }
 
+local logicfuncs = {
+    ["and"] = function(a, b) return a and b end,
+    ["or"] = function(a, b) return a or b end,
+}
+
 function Codegen.binary(self, op, a, b)
     local dtype
+
+    if logicfuncs[op] ~= nil then
+        dtype = "bool"
+        func = logicfuncs[op]
+
+        if a.constexpr and b.constexpr then
+            return {type=dtype, value=func(a.value, b.value), code="", constexpr=true}
+        end
+
+        if op == "and" and (a.constexpr or b.constexpr) then
+            if a.constexpr then a, b = b, a end
+            if b.value then return a else return b end
+        end
+
+        if op == "or" and (a.constexpr or b.constexpr) then
+            if a.constexpr then a, b = b, a end
+            if b.value then return b else return a end
+        end
+
+        local reg = new_reg(self, "temp", dtype)
+        emit_finit(self, "local " .. reg)
+        local code = {a.code, b.code, reg, "=", tostring(a.value)," ", op," ", tostring(b.value), "\n"}
+        return {type=dtype, value=reg, code=table_concat(code)}
+    end
+
     if a.type == "float" or b.type == "float" then
         assert(a.type == "float" or a.type == "int", "cannot perform math between " .. a.type .. " and " .. b.type)
         assert(b.type == "float" or b.type == "int", "cannot perform math between " .. a.type .. " and " .. b.type)
@@ -151,8 +197,20 @@ function Codegen.binary(self, op, a, b)
         error("cannot perform math between " .. a.type .. " and " .. b.type)
     end
 
-    if type(a.value) == "number" and type(b.value) == "number" then -- Constant Folding
-        return {type=dtype, value=binfuncs[op](a.value, b.value), code=""}
+    local func = compfuncs[op]
+    if func ~= nil then
+        dtype = "bool"
+    else
+        func = binfuncs[op]
+    end
+
+    assert(func ~= nil)
+
+    print(table2sexpr(a))
+    print(table2sexpr(b))
+
+    if a.constexpr and b.constexpr then -- Constant Folding
+        return {type=dtype, value=func(a.value, b.value), code="", constexpr=true}
     end
 
     local reg = new_reg(self, "temp", dtype)
@@ -162,7 +220,7 @@ function Codegen.binary(self, op, a, b)
 end
 
 function Codegen.call(self, func, params)
-    assert(func.type == "builtin")
+    assert(func.type == "builtin" or func.type == "function")
     local funcname = func.value
     local funcimpl = func.impl
 
@@ -174,7 +232,7 @@ function Codegen.call(self, func, params)
         codes[i] = param.code
         args[i] = param.value
 
-        if type(param.value) ~= "number" and type(param.value) ~= "boolean" then
+        if not param.constexpr then
             all_constants = false
         end
     end
@@ -199,7 +257,7 @@ function Codegen.call(self, func, params)
     assert(return_type ~= nil, "no matched function " .. tostring(func.name) .. " declared")
     local reg = new_reg(self, "call", return_type) -- TODO: Do type check!
     if all_constants and funcimpl ~= nil then
-        return { type="float", value=funcimpl(table.unpack(args)), code="" }
+        return { type="float", value=funcimpl(table.unpack(args)), code="", constexpr=true }
     end
 
     emit_finit(self, "local " .. reg)
@@ -235,7 +293,7 @@ function Codegen.decl_variable(self, name, attributes, dtype, init)
 
     local reg = new_reg(self, name, dtype)
     if is_const then
-        if type(init.value) == "number" or type(init.value) == "boolean" then -- Assign Constant to it
+        if init.constexpr then -- Assign Constant to it
             locals[name] = init
             return
         end
@@ -267,19 +325,72 @@ function Codegen.assign(self, dest, src)
     emit(self, dest.lvalue .. "=" .. src.value)
 end
 
-function Codegen.decl_function(self)
+function Codegen.decl_param(self, name, attributes, dtype)
+    return {name, attributes, dtype}
+end
+
+function Codegen.decl_function(self, name, params, attributes, dtype)
+    self.function_name = name
+    self.function_init = {}
+    self.locals = {}
+    self.code = {}
+    self.exit_label = new_reg(self, name, "exit")
+
+    if dtype ~= "void" then
+        local output_reg = new_reg(self, name, dtype)
+        emit_finit(self, "local "..output_reg)
+        self.return_reg = {type=dtype, value=output_reg, code="", lvalue=output_reg}
+    end
+
+    -- Caller should assign parameters to these registers
+    for i,param in ipairs(params) do
+        local pname, pattr, ptype = table.unpack(param)
+        local param_reg = new_reg(self, pname, ptype)
+        param[4] = param_reg
+        emit_finit(self, "local "..param_reg)
+        self.locals[pname] = {type=ptype, value=param_reg, code="", lvalue=param_reg}
+    end
+end
+
+function Codegen.return_val(self, value)
+    assert(self.return_reg == nil and value ~= nil, "attemping return value from function with void return type")
+    assert(self.return_reg ~= nil and value == nil, "return nothing but function type isn't void")
+
+    if value == nil then
+        return emit(self, "goto " .. self.exit_label)
+    end
+
+    assert(self.return_reg.type ~= value.type, "return type mismatch")
+
+    Codegen.assign(return_reg, value)
+    return emit(self, "goto " .. self.exit_label)
+end
+
+function Codegen.end_function(self)
+    emit(self, "::" .. self.exit_label .. "::")
+
+    local func = {
+        name = self.function_name,
+        init = self.function_init,
+        locals = self.locals,
+        code = self.code,
+        return_reg = self.return_reg,
+        exit_label = self.exit_label,
+    }
+
+    self.functions[self.function_name] = func
 end
 
 function Codegen.number_literal(self, x)
     if string_find(tostring(x), "[e%.]") == nil then
-        return {type="int", value=x, code=""}
+        return {type="int", value=x, code="", constexpr=true}
     else
-        return {type="float", value=x, code=""}
+        return {type="float", value=x, code="", constexpr=true}
     end
 end
 
 function Codegen.bool_literal(self, x)
-    return {type="bool", value=x, code=""}
+    return {type="bool", value=x, code="", constexpr=true}
 end
 
 function Codegen.identifier(self, x)
@@ -335,6 +446,21 @@ function Codegen.end_for(self)
     emit(self, "end")
 end
 
+function Codegen.begin_while(self, cond)
+    emit(self, cond.code)
+    emit(self, "while " .. tostring(cond.value) .. " do")
+    local stack = self.while_stack
+    stack[#stack+1] = cond
+end
+
+function Codegen.end_while(self)
+    local stack = self.while_stack
+    local cond = stack[#stack]
+    stack[#stack] = nil
+    emit(self, cond.code)
+    emit(self, "end")
+end
+
 function Codegen.__index(t, key)
     return Codegen[key]
 end
@@ -343,11 +469,14 @@ function Codegen.new()
     local self = {
         regid = 0,
         used_features = {},
-        init_code = {},
+        functions = {},
         function_init = {},
-        code = {},
         locals = {},
         globals = {},
+        while_stack = {},
+
+        init_code = {},
+        code = {},
     }
 
     setmetatable(self, Codegen)
@@ -357,7 +486,7 @@ end
 local Parser = require("parser")
 local function test_codegen()
     local code = [[
-        local a :float = 1 + 2 + 3 * 2 + 4 + math.sin(24.0)
+        local a <const> :float = 1 + 2 + 3 * 2 + 4 + math.sin(24.0)
         local b <const> :float = a + a * 3 * 5
         local c :float = math.sin(b)
         c = 114514
@@ -367,10 +496,15 @@ local function test_codegen()
         for i=1,d do
             e = e * 2
         end
+
+        while math.log(e * e) > 5.0 - 1.0 do
+            e = e / 2.0
+        end
     ]]
     local cg = Codegen.new()
     local parser = Parser.new(code, cg, "main")
 
+    Parser.parse(parser)
     local ok, message = pcall(Parser.parse, parser)
     if not ok then
         print("error: " .. message)

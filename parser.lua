@@ -223,7 +223,11 @@ parse_code_block = function(self, ends, ends_with_nil)
             parse_variable_decl(self)
         elseif token == "return" then
             take(self)
-            handler:return_val(parse_expr(self))
+            if table_find(ends, self.current) ~= nil or self.current == nil then
+                handler:return_val()
+            else
+                handler:return_val(parse_expr(self))
+            end
             -- Control flow should terminated here
             syntax_assert(self, table_find(ends, self.current) ~= nil, "end of block expected")
         else -- Function call or assignment
