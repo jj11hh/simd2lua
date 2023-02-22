@@ -189,13 +189,13 @@ parse_code_block = function(self, ends, ends_with_nil)
         elseif token == "for" then
             take(self)
             local iterator_name = self.current
-            syntax_assert(type(iterator_name) ~= "string", "expecting iterator name, get " .. tostring(iterator_name))
+            syntax_assert(self, type(iterator_name) == "string", "expecting iterator name, get " .. tostring(iterator_name))
             take(self)
             expect_and_take(self, "=")
             local begin = parse_expr(self)
             expect_and_take(self, ",")
             local ends = parse_expr(self)
-            local step = 1
+            local step = handler:number_literal(1)
             if self.current == "," then
                 take(self)
                 step = parse_expr(self)
@@ -207,7 +207,7 @@ parse_code_block = function(self, ends, ends_with_nil)
         elseif token == "function" then
             take(self)
             local function_name = take(self)
-            syntax_assert(type(iterator_name) ~= "string", "expecting function name, get " .. tostring(iterator_name))
+            syntax_assert(self, type(iterator_name) ~= "string", "expecting function name, get " .. tostring(iterator_name))
 
             expect_and_take(self, "(")
             local params = parse_param_decl(self)
@@ -224,9 +224,11 @@ parse_code_block = function(self, ends, ends_with_nil)
         elseif token == "return" then
             take(self)
             handler:return_val(parse_expr(self))
+            -- Control flow should terminated here
+            syntax_assert(self, table_find(ends, self.current) ~= nil, "end of block expected")
         else -- Function call or assignment
             local lvalue = parse_expr(self)
-            if self.current == "=" then -- assignment
+            if self.current == "=" then -- Assignment
                 take(self)
                 local rvalue = parse_expr(self)
                 handler:assign(lvalue, rvalue)
