@@ -337,12 +337,12 @@ parse_postfix = function(self, id)
         take(self)
         token = self.current
         take(self)
-        return handler.field_access(self, id, token)
+        return handler.field_access(id, token)
     elseif token == "[" then
         take(self)
         local index = parse_expr(self)
         expect_and_take(self, "]")
-        return handler.index_access(self, id, index)
+        return handler.index_access(id, index)
     elseif token == "(" then
         take(self)
         local parameters = parse_parameters(self)
@@ -374,17 +374,48 @@ local function test_expr()
     assert(parse_binary(parser) == "(and 1 (~ (+ (- (* 2 2) 3) (* (- 0.002) (not 1))) (~ 255)))")
 end
 
+local function table2sexpr(t)
+    if type(t) ~= "table" then return t end
+
+    local hash_count = 0
+    for k,v in pairs(t) do
+        if not (type(k) == "number" and k >= 1 and k <= #t) then
+            hash_count = hash_count + 1
+        end
+    end
+
+    local output = {}
+    local lbrace = "["
+    local rbrace = "]"
+
+    if hash_count == 0 then
+        lbrace = "("
+        rbrace = ")"
+    end
+
+    for i,v in ipairs(t) do
+        output[i] = table2sexpr(v)
+    end
+
+    for k,v in pairs(t) do
+        if not (type(k) == "number" and k >= 1 and k <= #t) then
+            output[#output+1] = k .. "=" .. table2sexpr(v)
+        end
+    end
+
+    return lbrace .. table.concat(output, " ") .. rbrace
+end
 
 local function test_function()
     local meta = {}
     meta.__index = function(t, key)
         local function handle(...)
-            local output = {"(", key, ", "}
+            local output = {"(", key, " "}
             local args = {...}
 
             for i=1,#args do
-                output[#output+1] = tostring(args[i])
-                output[#output+1] = ", "
+                output[#output+1] = table2sexpr(args[i])
+                output[#output+1] = " "
             end
             output[#output] = ")"
 
@@ -406,6 +437,9 @@ local function test_function()
 
         function test2() :int
             local temp :int = 2
+            for i=1,10,2 do
+                temp = 3.0 + temp * temp.xyz
+            end
             return test1(3 + 3)
         end
     ]]
