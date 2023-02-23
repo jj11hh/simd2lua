@@ -821,24 +821,28 @@ function Codegen.export_code(self, function_name)
 
     code[1] = "return function("
     for i,param in ipairs(func.parameters) do
-        if param.type == "float" or param.type == "int" or param.type == "bool" then
+        local ptype = param.type
+        local pvalue = param.value
+        local attrs = param.attributes
+        local components = param.components
+        if ptype == "float" or ptype == "int" or ptype == "bool" then
             -- Just pass then as register
-            code[#code+1] = param.value
+            code[#code+1] = pvalue
             code[#code+1] = ","
-            passed_registers[param.value] = true
-        elseif vector_size[param.type] ~= nil then
-            local size = vector_size[param.type]
-            local is_table = table_find(param.attributes, "table")
-            local is_array = table_find(param.attributes, "array")
+            passed_registers[pvalue] = true
+        elseif vector_size[ptype] ~= nil then
+            local size = vector_size[ptype]
+            local is_table = table_find(attrs, "table")
+            local is_array = table_find(attrs, "array")
             if is_table or is_array then
                 local table_name = new_reg(self, param.name, "table")
                 code[#code+1] = table_name
                 code[#code+1] = ","
                 for i=1,size do
                     if is_table then
-                        table_extraction[#table_extraction+1] = table_concat{param.components[i].value,"=",table_name,".",index2swizzle[i]}
+                        table_extraction[#table_extraction+1] = table_concat{components[i].value,"=",table_name,".",index2swizzle[i]}
                     else
-                        table_extraction[#table_extraction+1] = table_concat{param.components[i].value,"=",table_name,"[",i,"]"}
+                        table_extraction[#table_extraction+1] = table_concat{components[i].value,"=",table_name,"[",i,"]"}
                     end
                 end
             else
