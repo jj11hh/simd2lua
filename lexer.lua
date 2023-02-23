@@ -182,6 +182,7 @@ end
 
 -- Test
 
+--[[
 local function lexer_test()
     local lexer = Lexer.new("1.56 << function main () 2234e2 \n ; -- comment \n   0xFF + +.245 * v0.xyz end ")
 
@@ -191,6 +192,7 @@ local function lexer_test()
     end
 end
 
--- lexer_test()
+lexer_test()
+--]]
 
 return Lexer

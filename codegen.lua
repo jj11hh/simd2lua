@@ -517,7 +517,6 @@ local function make_codegen(func) -- TODO: Cache Codegen
         local all_constants = true
 
         for i,param in ipairs(params) do
-            print(table2sexpr(param))
             table_extend(codes, param.code)
             args[i] = param.value
             if not param.constexpr then all_constants = false end
@@ -737,7 +736,7 @@ function Codegen.new()
     setmetatable(self, Codegen)
     return self
 end
-
+--[=====[
 local Parser = require("parser")
 local function test_codegen()
     local code = [[
@@ -779,7 +778,6 @@ local function test_codegen()
     local cg = Codegen.new()
     cg.indent_char = "  "
     local parser = Parser.new(code, cg, "main")
-
     Parser.parse(parser)
     local ok, message = pcall(Parser.parse, parser)
     if not ok then
@@ -790,10 +788,10 @@ local function test_codegen()
         print(cg:export_code("smoothstep"))
         local smoothstep = cg:export("smoothstep")
         print(smoothstep(10, 20, 18))
-        -- print(table.concat(cg.init_code))
-        -- print(table.concat(cg.functions.test_func.init))
-        -- print(table.concat(cg.functions.test_func.code))
     end
 end
 
 test_codegen()
+--]=====]
+
+return Codegen

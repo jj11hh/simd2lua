@@ -368,7 +368,7 @@ parse_postfix = function(self, id)
 end
 
 -- Tests
-
+--[=====[
 local function test_expr()
     local code = "1 and 2 * 2 - 3 + -2e-3 * not 1 ~ ~0xFF"
     local handler = {}
@@ -435,7 +435,8 @@ local function test_function()
     Parser.parse(parser)
 end
 
--- test_expr()
--- test_function()
+test_expr()
+test_function()
+--]=====]
 
 return Parser
