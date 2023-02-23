@@ -228,6 +228,8 @@ function Codegen.binary(self, op, a, b)
         local reg = new_reg(self, "temp", dtype)
         emit_finit(self, "local " .. reg)
         local code = {}
+
+        -- TODO: Short-circuit evaluation
         table_extend(code, a.code)
         table_extend(code, b.code)
         emit_to_buffer(code, reg.."="..tostring(a.value).." "..op.." "..tostring(b.value))
