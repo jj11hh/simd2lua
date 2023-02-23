@@ -283,7 +283,6 @@ function Codegen.call(self, func, params)
     assert(check_signature(func.signature, params) ~= nil, "type mismatch on function call:" .. func.name)
 
     -- Do Function Inlining
-    print(table2sexpr(func))
     local return_label = new_reg(self, func.name, "exit")
     local old_label = func.exit_label
     local func_inits = func.init
@@ -295,6 +294,10 @@ function Codegen.call(self, func, params)
     end
 
     local code = {}
+
+    for i,param in ipairs(params) do
+        emit_to_buffer(code, param.code)
+    end
 
     -- Copy Code
     for i,source in ipairs(func.code) do
@@ -437,11 +440,19 @@ end
 function Codegen.end_function(self)
     -- Eliminate Empty Goto
     local code_buffer = self.code
-    if string_match(code_buffer[#code_buffer], "^goto " .. self.exit_label) then
+    local pattern = "^goto " .. self.exit_label
+
+    if string_match(code_buffer[#code_buffer], pattern) then
         code_buffer[#code_buffer] = nil
     end
 
-    emit(self, "::" .. self.exit_label .. "::")
+    -- Unused label will break our peephole optimization, remove it if possible
+    for i,line in ipairs(code_buffer) do
+        if string_match(line, pattern) ~= nil then
+            emit(self, "::" .. self.exit_label .. "::")
+            break
+        end
+    end
 
     local func = {
         type = "function",
@@ -506,6 +517,7 @@ local function make_codegen(func) -- TODO: Cache Codegen
         local all_constants = true
 
         for i,param in ipairs(params) do
+            print(table2sexpr(param))
             table_extend(codes, param.code)
             args[i] = param.value
             if not param.constexpr then all_constants = false end
@@ -519,7 +531,7 @@ local function make_codegen(func) -- TODO: Cache Codegen
 
         assert(return_type ~= nil, "no matched function " .. tostring(func.name) .. " declared")
 
-        local reg = new_reg(self, "call", return_type)
+        local reg = new_reg(self, funcname, return_type)
         if all_constants and funcimpl ~= nil then
             return { type="float", value=funcimpl(table.unpack(args)), code="", constexpr=true }
         end
@@ -627,6 +639,84 @@ function Codegen.end_if(self)
     end
 end
 
+local Lexer = require("lexer")
+local Lexer_new = Lexer.new
+local Lexer_next = Lexer.next
+
+function Codegen.export_code(self, function_name)
+    -- Generate Wrapper Code for Functions
+    local func = self.functions[function_name]
+    assert(func ~= nil)
+    local code = {}
+    local passed_registers = {}
+    code[1] = "return function("
+    for i,param in ipairs(func.parameters) do
+        if param.type == "float" or param.type == "int" or param.type == "bool" then
+            -- Just pass then as register
+            code[#code+1] = param.value
+            code[#code+1] = ","
+            passed_registers[param.value] = true
+        else
+            error("Not implemented")
+        end
+    end
+    if code[#code] == "," then 
+        code[#code] = ")\n"
+    else
+        code[#code+1] = ")\n"
+    end
+
+    code = {table.concat(code)} -- Assemble the first line
+    local init = func.init
+    local declared_locals = {}
+    local referenced_locals = {}
+
+    for _,line in ipairs(init) do
+        local i, j = string_find(line, "^local ")
+        local reg = string_sub(line, j+1, #line-1) -- Remove line break to get register name
+        declared_locals[reg] = true
+    end
+
+    -- Scan code for reference
+    for _,line in ipairs(func.code) do
+        local lexer = Lexer_new(line)
+        while true do
+            local token = Lexer_next(lexer)
+            if token == nil then break end
+
+            if declared_locals[token] ~= nil then
+                referenced_locals[token] = true
+            end
+        end
+    end
+
+    for _,line in ipairs(init) do
+        local i, j = string_find(line, "^local ")
+        local blocked = false
+        if i ~= nil then
+            local reg = string_sub(line, j+1, #line-1) -- Remove line break to get register name
+
+            -- If a register are passed from outside or not referenced, remove it from declaration
+            blocked = passed_registers[reg] ~= nil or referenced_locals[reg] == nil
+        end
+
+        if not blocked then code[#code+1] = line end
+    end
+
+    table_extend(code, func.code)
+    if func.return_reg ~= nil then
+        code[#code+1] = "return " .. func.return_reg.value .. "\n"
+    end
+    code[#code+1] = "end\n"
+
+    return table_concat(self.init_code) .. table_concat(code)
+end
+
+function Codegen.export(self, function_name)
+    local code = Codegen.export_code(self, function_name)
+    return load(code)()
+end
+
 function Codegen.__index(t, key)
     return Codegen[key]
 end
@@ -651,11 +741,16 @@ end
 local Parser = require("parser")
 local function test_codegen()
     local code = [[
-        function lerp(a :float, b :float, t :float) :float
-            return a * t + b * (1 - t)
+        function clamp(x :float, lower :float, upper :float) :float
+            return math.max(math.min(x, upper), lower)
         end
 
-        function test_func() : void
+        function smoothstep(edge0 :float, edge1 :float, x :float) :float
+            local t:float = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+            return t * t * (3.0 - 2.0 * t)
+        end
+
+        function test_func(x:int, y:float, z:int) : void
             local a <const> :float = 1 + 2 + 3 * 2 + 4 + math.sin(24.0)
             local b <const> :float = a + a * 3 * 5
             local c :float = math.sin(b)
@@ -673,11 +768,11 @@ local function test_codegen()
                 return
             end
 
-            e = lerp(e, e, 0.5)
+            e = smoothstep(e, e + 0.1, 0.5)
 
             while math.log(e * e) > 5.0 - 1.0 do
                 e = e / 2.0
-                d = int(e)
+                d = int(e) + z * z
             end
         end
     ]]
@@ -692,9 +787,12 @@ local function test_codegen()
         print("file: " .. parser.filename)
         print("line: " .. parser.line)
     else
-        print(table.concat(cg.init_code))
-        print(table.concat(cg.functions.test_func.init))
-        print(table.concat(cg.functions.test_func.code))
+        print(cg:export_code("smoothstep"))
+        local smoothstep = cg:export("smoothstep")
+        print(smoothstep(10, 20, 18))
+        -- print(table.concat(cg.init_code))
+        -- print(table.concat(cg.functions.test_func.init))
+        -- print(table.concat(cg.functions.test_func.code))
     end
 end
 
