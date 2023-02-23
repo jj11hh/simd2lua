@@ -3,8 +3,12 @@
 local Utils = require("utils")
 local table2sexpr = Utils.table2sexpr
 local table_find = Utils.table_find
+local table_extend = Utils.table_extend
 local table_concat = table.concat
 local string_find = string.find
+local string_match = string.match
+local string_gsub = string.gsub
+local string_sub = string.sub
 
 local Codegen = {}
 
@@ -45,24 +49,50 @@ local function new_reg(self, tag, dtype)
     return name
 end
 
-local function emit(self, code)
+local function emit_to_buffer(buf, code, indent)
+    if type(code) == "table" then
+        for i=1,#code do emit_to_buffer(buf, code[i], indent) end
+        return
+    end
+
     if code == "" then return end
+    if indent ~= nil then
+        code = indent .. code
+    end
+
     local linestop = ""
-    if string.sub(code, #code, #code) ~= "\n" then
+    if string_sub(code, #code, #code) ~= "\n" then
         linestop = "\n"
     end
-    local buf = self.code
     buf[#buf+1] = code .. linestop
 end
 
 local function emit_finit(self, code)
-    if code == "" then return end
-    local linestop = ""
-    if string.sub(code, #code, #code) ~= "\n" then
-        linestop = "\n"
+    emit_to_buffer(self.function_init, code)
+end
+
+local function emit(self, code)
+    local level = self.indent
+    local char = self.indent_char
+    local indent = ""
+
+    for i =1,level do
+        indent = indent .. char
     end
-    local buf = self.function_init
-    buf[#buf+1] = code .. linestop
+
+    emit_to_buffer(self.code, code, indent)
+end
+
+local function fold_code(var)
+    local var_code = var.code
+    if #var_code == 0 then return end
+    local last_code = var_code[#var_code]
+    local pattern = "^"..tostring(var.value).."="
+    if string_match(last_code, pattern) then
+        local substr = string_sub(last_code, #pattern, #last_code)
+        var_code[#var_code] = nil
+        var.value = string_gsub(substr, "\n", "")
+    end
 end
 
 local function use_feature(self, mod, feature, dtype)
@@ -82,12 +112,21 @@ local function use_feature(self, mod, feature, dtype)
 
     assert(type(impl) == "function" and dtype == "builtin")
 
-    local init_code = self.init_code
-    init_code[#init_code+1] = "local " .. reg .. "=" .. feature_name .. "\n";
+    emit_to_buffer(self.init_code, "local " .. reg .. "=" .. feature_name)
     local retval = {type=dtype, value=reg, code="", impl=impl}
 
     self.used_features[feature_name] = retval
     return retval
+end
+
+local function check_signature(sig, params)
+    if #sig-1 == #params then
+        local match = true
+        for j=2,#sig do
+            if params[j-1].type ~= sig[j] then match = false end
+        end
+        if match then return sig[1] end
+    end
 end
 
 local function cast_float_to_int(self, x)
@@ -98,12 +137,17 @@ local function cast_float_to_int(self, x)
         return {type="int", value=value, code=x.code, constexpr=true}
     end
     local reg = new_reg(self, "temp", "int")
-    local code = {
-        x.code, 
-        "local ", reg, "\n",
-        "if ", x.value, ">0 then ", reg, "=floor(", x.value, ") else ", reg, "=ceil(", x.value, ") end\n"
-    }
-    return {type="int", value=reg, code=table_concat(code)}
+    local floor_func = use_feature(self, "math", "floor", "builtin").value
+    local ceil_func = use_feature(self, "math", "ceil", "builtin").value
+    emit_finit(self, "local " .. reg)
+    local code = {}
+    table_extend(code, x.code)
+    emit_to_buffer(code, "if " .. x.value .. ">0 then ")
+    emit_to_buffer(code, reg .. "=" .. floor_func .. "(" .. x.value .. ")")
+    emit_to_buffer(code, "else")
+    emit_to_buffer(code, reg .. "=" .. ceil_func .. "(" .. x.value .. ")")
+    emit_to_buffer(code, "end")
+    return {type="int", value=reg, code=code}
 end
 
 local function cast_int_to_float(self, x)
@@ -115,14 +159,18 @@ end
 
 local builtin_functions = {}
 
-function builtin_functions.int(self, input)
+function builtin_functions.int(self, params)
+    assert(#params == 1)
+    local input = params[1]
     if input.type == "int" then
         return input
     end
     return cast_float_to_int(self, input)
 end
 
-function builtin_functions.float(self, input)
+function builtin_functions.float(self, params)
+    assert(#params == 1)
+    local input = params[1]
     if input.type == "float" then
         return input
     end
@@ -179,8 +227,11 @@ function Codegen.binary(self, op, a, b)
 
         local reg = new_reg(self, "temp", dtype)
         emit_finit(self, "local " .. reg)
-        local code = {a.code, b.code, reg, "=", tostring(a.value)," ", op," ", tostring(b.value), "\n"}
-        return {type=dtype, value=reg, code=table_concat(code)}
+        local code = {}
+        table_extend(code, a.code)
+        table_extend(code, b.code)
+        emit_to_buffer(code, reg.."="..tostring(a.value).." "..op.." "..tostring(b.value))
+        return {type=dtype, value=reg, code=code}
     end
 
     if a.type == "float" or b.type == "float" then
@@ -206,63 +257,61 @@ function Codegen.binary(self, op, a, b)
 
     assert(func ~= nil)
 
-    print(table2sexpr(a))
-    print(table2sexpr(b))
-
     if a.constexpr and b.constexpr then -- Constant Folding
         return {type=dtype, value=func(a.value, b.value), code="", constexpr=true}
     end
 
     local reg = new_reg(self, "temp", dtype)
     emit_finit(self, "local " .. reg)
-    local code = {a.code, b.code, reg .. "=" .. a.value .. op .. b.value .. "\n"}
-    return {type=dtype, value=reg, code=table_concat(code)}
+
+    local code = {}
+    table_extend(code, a.code)
+    table_extend(code, b.code)
+    emit_to_buffer(code, reg.."="..tostring(a.value).." "..op.." "..tostring(b.value))
+
+    return {type=dtype, value=reg, code=code}
 end
 
 function Codegen.call(self, func, params)
     assert(func.type == "builtin" or func.type == "function")
-    local funcname = func.value
-    local funcimpl = func.impl
 
-    local codes = {}
-    local args = {}
-    local all_constants = true
+    -- Process Builtin Functions
+    if func.codegen ~= nil then
+        return func.codegen(self, params)
+    end
 
-    for i,param in ipairs(params) do
-        codes[i] = param.code
-        args[i] = param.value
+    assert(check_signature(func.signature, params) ~= nil, "type mismatch on function call:" .. func.name)
 
-        if not param.constexpr then
-            all_constants = false
+    -- Do Function Inlining
+    print(table2sexpr(func))
+    local return_label = new_reg(self, func.name, "exit")
+    local old_label = func.exit_label
+    local func_inits = func.init
+    local func_params = func.parameters
+
+    -- Copy Registers
+    for i,v in ipairs(func_inits) do
+        emit_finit(self, v)
+    end
+
+    local code = {}
+
+    -- Copy Code
+    for i,source in ipairs(func.code) do
+        for j,param in ipairs(params) do
+            -- TODO: Check for inout, out
+            source = string_gsub(source, func_params[j].value, param.value)
         end
+        source = string_gsub(source, old_label, return_label)
+        emit_to_buffer(code, source)
     end
 
-    local return_type = nil
-    local signature = func.signature
-    for i=1,#signature do
-        local sig = signature[i]
-        if #sig-1 == #params then
-            local match = true
-            for j=2,#sig do
-                if params[j-1].type ~= sig[j] then
-                    match = false
-                end
-            end
-            if match then
-                return_type = sig[1]
-            end
-        end
+    local return_reg = func.return_reg
+    if return_reg == nil then
+        return {type="void", code=code, value=""}
+    else
+        return {type=return_reg.type, code=code, value=return_reg.value}
     end
-
-    assert(return_type ~= nil, "no matched function " .. tostring(func.name) .. " declared")
-    local reg = new_reg(self, "call", return_type) -- TODO: Do type check!
-    if all_constants and funcimpl ~= nil then
-        return { type="float", value=funcimpl(table.unpack(args)), code="", constexpr=true }
-    end
-
-    emit_finit(self, "local " .. reg)
-    codes[#codes+1] = table_concat{reg, "=", funcname, "(", table.concat(args, ","), ")\n"}
-    return { type="float", value=reg, code=table_concat(codes) }
 end
 
 function Codegen.expr_statement(self, expr)
@@ -316,6 +365,7 @@ function Codegen.decl_variable(self, name, attributes, dtype, init)
 end
 
 function Codegen.assign(self, dest, src)
+    fold_code(src)
     if dest.type == "float" and src.type == "int" then
         src = cast_int_to_float(self, src)
     end
@@ -332,7 +382,6 @@ end
 function Codegen.decl_function(self, name, params, attributes, dtype)
     self.function_name = name
     self.function_init = {}
-    self.locals = {}
     self.code = {}
     self.exit_label = new_reg(self, name, "exit")
 
@@ -340,7 +389,13 @@ function Codegen.decl_function(self, name, params, attributes, dtype)
         local output_reg = new_reg(self, name, dtype)
         emit_finit(self, "local "..output_reg)
         self.return_reg = {type=dtype, value=output_reg, code="", lvalue=output_reg}
+    else
+        self.return_reg = nil
     end
+
+    local signature = {dtype}
+    local locals = {}
+    local parameters = {}
 
     -- Caller should assign parameters to these registers
     for i,param in ipairs(params) do
@@ -348,34 +403,56 @@ function Codegen.decl_function(self, name, params, attributes, dtype)
         local param_reg = new_reg(self, pname, ptype)
         param[4] = param_reg
         emit_finit(self, "local "..param_reg)
-        self.locals[pname] = {type=ptype, value=param_reg, code="", lvalue=param_reg}
+        -- By default, all parameters are immutable, excepting they are inout or out
+        if table_find(pattr, "inout") or table_find(pattr, "out") then
+            locals[pname] = {type=ptype, value=param_reg, code="", lvalue=param_reg}
+        else
+            locals[pname] = {type=ptype, value=param_reg, code=""}
+        end
+        parameters[i] = {type=ptype, value=param_reg, code="", attributes=pattr}
+        signature[i+1] = ptype
     end
+
+    self.signature = signature
+    self.locals = locals
+    self.parameters = parameters
 end
 
 function Codegen.return_val(self, value)
-    assert(self.return_reg == nil and value ~= nil, "attemping return value from function with void return type")
-    assert(self.return_reg ~= nil and value == nil, "return nothing but function type isn't void")
+    local return_reg = self.return_reg
+    local exit_label = self.exit_label
+    assert(not(return_reg == nil and value ~= nil), "attemping return value from function with void return type")
+    assert(not(return_reg ~= nil and value == nil), "return nothing but function type isn't void")
 
     if value == nil then
-        return emit(self, "goto " .. self.exit_label)
+        return emit(self, "goto " .. exit_label)
     end
 
-    assert(self.return_reg.type ~= value.type, "return type mismatch")
+    assert(return_reg.type == value.type, "return type mismatch")
 
-    Codegen.assign(return_reg, value)
-    return emit(self, "goto " .. self.exit_label)
+    Codegen.assign(self, return_reg, value)
+    return emit(self, "goto " .. exit_label)
 end
 
 function Codegen.end_function(self)
+    -- Eliminate Empty Goto
+    local code_buffer = self.code
+    if string_match(code_buffer[#code_buffer], "^goto " .. self.exit_label) then
+        code_buffer[#code_buffer] = nil
+    end
+
     emit(self, "::" .. self.exit_label .. "::")
 
     local func = {
+        type = "function",
         name = self.function_name,
         init = self.function_init,
         locals = self.locals,
         code = self.code,
         return_reg = self.return_reg,
         exit_label = self.exit_label,
+        signature = self.signature,
+        parameters = self.parameters,
     }
 
     self.functions[self.function_name] = func
@@ -406,7 +483,51 @@ function Codegen.identifier(self, x)
         return {type="builtin_module", value=x, code=""}
     end
 
+    if builtin_functions[x] ~= nil then
+        local codegen = builtin_functions[x]
+        return {type="builtin", value=x, codegen=codegen}
+    end
+
+    if self.functions[x] ~= nil then
+        return self.functions[x]
+    end
+
     error("undefined variable " .. x)
+end
+
+local function make_codegen(func) -- TODO: Cache Codegen
+    local funcname = func.value
+    local funcimpl = func.impl
+    local signature = func.signature
+
+    return function(self, params)
+        local codes = {}
+        local args = {}
+        local all_constants = true
+
+        for i,param in ipairs(params) do
+            table_extend(codes, param.code)
+            args[i] = param.value
+            if not param.constexpr then all_constants = false end
+        end
+
+        local return_type = nil
+        for i=1,#signature do -- Search for matched signature
+            return_type = check_signature(signature[i], params)
+            if return_type ~= nil then break end
+        end
+
+        assert(return_type ~= nil, "no matched function " .. tostring(func.name) .. " declared")
+
+        local reg = new_reg(self, "call", return_type)
+        if all_constants and funcimpl ~= nil then
+            return { type="float", value=funcimpl(table.unpack(args)), code="", constexpr=true }
+        end
+
+        emit_finit(self, "local " .. reg)
+        emit_to_buffer(codes, reg.."="..funcname.."("..table.concat(args, ",")..")")
+        return { type="float", value=reg, code=codes }
+    end
 end
 
 function Codegen.get_field(self, x, field)
@@ -423,6 +544,7 @@ function Codegen.get_field(self, x, field)
                 assert(signature ~= nil, "unsupported math function " .. field)
                 func.signature = signature
                 func.name = name
+                func.codegen = make_codegen(func)
             end
 
             return func
@@ -433,6 +555,9 @@ function Codegen.get_field(self, x, field)
 end
 
 function Codegen.begin_for(self, name, begin, ends, step)
+    fold_code(begin)
+    fold_code(ends)
+    fold_code(step)
     assert(begin.type == "int" and ends.type == "int" and step.type == "int", "begin, end and step should be integer value")
     local reg = new_reg(self, name, "int")
     self.locals[name] = {type="int", value=reg, code=""}
@@ -440,17 +565,21 @@ function Codegen.begin_for(self, name, begin, ends, step)
     emit(self, ends.code)
     emit(self, step.code)
     emit(self, "for " .. reg .. "=" .. begin.value .. "," .. ends.value .. "," .. step.value .. " do")
+    self.indent = self.indent + 1
 end
 
 function Codegen.end_for(self)
+    self.indent = self.indent - 1
     emit(self, "end")
 end
 
 function Codegen.begin_while(self, cond)
+    fold_code(cond)
     emit(self, cond.code)
     emit(self, "while " .. tostring(cond.value) .. " do")
     local stack = self.while_stack
     stack[#stack+1] = cond
+    self.indent = self.indent + 1
 end
 
 function Codegen.end_while(self)
@@ -458,7 +587,44 @@ function Codegen.end_while(self)
     local cond = stack[#stack]
     stack[#stack] = nil
     emit(self, cond.code)
+    self.indent = self.indent - 1
     emit(self, "end")
+end
+
+function Codegen.begin_if(self, cond)
+    fold_code(cond)
+    emit(self, cond.code)
+    emit(self, "if "..tostring(cond.value).." then")
+    self.indent = self.indent + 1
+    self.if_level = self.if_level + 1
+end
+
+function Codegen.begin_elseif(self, cond)
+    fold_code(cond)
+    if #cond.code == 0 then
+        self.indent = self.indent - 1
+        emit(self, "elseif "..tostring(cond.value).." then")
+        self.indent = self.indent + 1
+        return
+    end
+
+    self.indent = self.indent - 1
+    emit(self, "else")
+    self.indent = self.indent + 1
+    Codegen.begin_if(self, cond)
+end
+
+function Codegen.begin_else(self)
+    self.indent = self.indent - 1
+    emit(self, "else")
+    self.indent = self.indent + 1
+end
+
+function Codegen.end_if(self)
+    for i=1,self.if_level do
+        self.indent = self.indent - 1
+        emit(self, "end")
+    end
 end
 
 function Codegen.__index(t, key)
@@ -470,13 +636,12 @@ function Codegen.new()
         regid = 0,
         used_features = {},
         functions = {},
-        function_init = {},
-        locals = {},
         globals = {},
         while_stack = {},
-
         init_code = {},
-        code = {},
+        if_level = 0,
+        indent = 0,
+        indent_char = 0,
     }
 
     setmetatable(self, Codegen)
@@ -486,22 +651,38 @@ end
 local Parser = require("parser")
 local function test_codegen()
     local code = [[
-        local a <const> :float = 1 + 2 + 3 * 2 + 4 + math.sin(24.0)
-        local b <const> :float = a + a * 3 * 5
-        local c :float = math.sin(b)
-        c = 114514
-        local d :int = 1 + 3 * 4
-        local e :float = math.min(d, d)
-
-        for i=1,d do
-            e = e * 2
+        function lerp(a :float, b :float, t :float) :float
+            return a * t + b * (1 - t)
         end
 
-        while math.log(e * e) > 5.0 - 1.0 do
-            e = e / 2.0
+        function test_func() : void
+            local a <const> :float = 1 + 2 + 3 * 2 + 4 + math.sin(24.0)
+            local b <const> :float = a + a * 3 * 5
+            local c :float = math.sin(b)
+            c = 114514
+            local d :int = 1 + 3 * 4
+            local e :float = math.min(d, d)
+            
+            for i=1,d do
+                e = e * 2
+            end
+
+            if e > 3.4 then
+                e = 1.0
+            elseif e > 2.1 then
+                return
+            end
+
+            e = lerp(e, e, 0.5)
+
+            while math.log(e * e) > 5.0 - 1.0 do
+                e = e / 2.0
+                d = int(e)
+            end
         end
     ]]
     local cg = Codegen.new()
+    cg.indent_char = "  "
     local parser = Parser.new(code, cg, "main")
 
     Parser.parse(parser)
@@ -512,8 +693,8 @@ local function test_codegen()
         print("line: " .. parser.line)
     else
         print(table.concat(cg.init_code))
-        print(table.concat(cg.function_init))
-        print(table.concat(cg.code))
+        print(table.concat(cg.functions.test_func.init))
+        print(table.concat(cg.functions.test_func.code))
     end
 end
 

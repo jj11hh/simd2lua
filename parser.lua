@@ -143,6 +143,11 @@ parse_param_decl = function(self)
         local attributes = parse_attributes(self)
         local type_notation = parse_type_notation(self)
         params[#params+1] = handler:decl_param(name, attributes, type_notation)
+
+        token = self.current
+        if token == "," then
+            take(self)
+        end
     end
 
     return params
@@ -174,6 +179,7 @@ parse_code_block = function(self, ends, ends_with_nil)
                     break 
                 elseif ends_with == "elseif" then
                     cond = parse_expr(self)
+                    expect_and_take(self, "then")
                     handler:begin_elseif(cond)
                 elseif ends_with == "else" then
                     handler:begin_else()
