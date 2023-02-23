@@ -9,7 +9,7 @@ function Compiler.compile(code, filename)
     local parser = Parser.new(code, cg, filename)
 
     local function on_error(info)
-        error("Complation Aborted! \n" .. info .. "\nfile: " .. filename .. "\nline:" 
+        print("Complation Aborted! \n" .. info .. "\nfile: " .. filename .. "\nline:" 
             .. parser.line .. "," .. parser.line_pos .. "\n" .. debug.traceback())
     end
 
@@ -28,18 +28,30 @@ function smoothstep(edge0 :float, edge1 :float, x :float) :float
     return t * t * (3.0 - 2.0 * t)
 end
 
-function dot(x0 :float, y0 :float, z0 :float, x1 :float, y1 :float, z1 :float) :float
-    return x0*x1 + y0*y1 + z0*z1
+function dot(p0 <array> :float3, p1 <array> :float3) :float
+    local sum :float3 = p0 * p1
+    return sum.x + sum.y + sum.z
+end
+
+function normalize(p <array> :float3) :float3
+    local sum :float = math.sqrt(dot(p, p))
+    return p / sum
 end
 ]]
 
 local result = Compiler.compile(testcode)
+print(result:export_code("dot"))
+print(result:export_code("normalize"))
+print(result:export_code("smoothstep"))
 local smoothstep = result:export("smoothstep")
 local dot = result:export("dot")
+local normalize = result:export("normalize")
 
-print(result:export_code("dot"))
+local Utils = require("utils")
+local table2sexpr = Utils.table2sexpr
+
 print(smoothstep(40, 50, 46))
-print(dot(1,2,3,1,2,3))
-
+print(dot({1,2,3}, {1,2,3}))
+print(table2sexpr(normalize({1, 2, 3})))
 
 return Compiler

@@ -43,6 +43,43 @@ local builtin_signatures = {
     ["float"] = { {"float", "int"}, {"float", "float"} },
 }
 
+local vector_size = {
+    float = 1,
+    float2 = 2,
+    float3 = 3,
+    float4 = 4,
+
+    int = 1,
+    int2 = 2,
+    int3 = 3,
+    int4 = 4,
+
+    bool = 1,
+    bool2 = 2,
+    bool3 = 3,
+    bool4 = 4,
+}
+
+local swizzle2index = { x = 1, y = 2, z = 3, w = 4, }
+local index2swizzle = { "x", "y", "z", "w" }
+
+local vec2scalar = {
+    float  = "float",
+    float1 = "float",
+    float2 = "float",
+    float3 = "float",
+
+    int  = "int",
+    int1 = "int",
+    int2 = "int",
+    int3 = "int",
+
+    bool  = "bool",
+    bool1 = "bool",
+    bool2 = "bool",
+    bool3 = "bool",
+}
+
 local function new_reg(self, tag, dtype)
     local name = dtype .. "_" .. tag .. "_" .. self.regid
     self.regid = self.regid + 1
@@ -72,6 +109,8 @@ local function emit_finit(self, code)
 end
 
 local function emit(self, code)
+    assert(self.code ~= nil, "cannot emit code outside functions")
+
     local level = self.indent
     local char = self.indent_char
     local indent = ""
@@ -85,7 +124,7 @@ end
 
 local function fold_code(var)
     local var_code = var.code
-    if #var_code == 0 then return end
+    if var_code == nil or #var_code == 0 then return end
     local last_code = var_code[#var_code]
     local pattern = "^"..tostring(var.value).."="
     if string_match(last_code, pattern) then
@@ -204,8 +243,58 @@ local logicfuncs = {
     ["or"] = function(a, b) return a or b end,
 }
 
+local function get_component(vector, component)
+    return vector.components[component]
+end
+
 function Codegen.binary(self, op, a, b)
     local dtype
+
+    -- Convert Vector Operation to Scalar
+    local size_a = vector_size[a.type]
+    local size_b = vector_size[b.type]
+
+    assert(size_a == size_b or size_a ~= 1 or size_b ~= 1, "vector width mismatch")
+    assert(vec2scalar[a.type] == vec2scalar[b.type], "vector type mismatch")
+    if size_a ~= nil and size_b ~= nil and (size_a > 1 or size_b > 1) then
+        local result = {}
+        if size_a > 1 and size_b > 1 then
+            for i=1,size_a do result[#result+1] = Codegen.binary(self, op, get_component(a, i), get_component(b, i)) end
+        elseif size_a > 1 then
+            for i=1,size_a do result[#result+1] = Codegen.binary(self, op, get_component(a, i), b) end
+        else
+            for i=1,size_a do result[#result+1] = Codegen.binary(self, op, a, get_component(b, i)) end
+        end
+        return {type=a.type, components=result}
+    end
+
+    if logicfuncs[op] ~= nil then
+        dtype = "bool"
+        func = logicfuncs[op]
+
+        if a.constexpr and b.constexpr then
+            return {type=dtype, value=func(a.value, b.value), code="", constexpr=true}
+        end
+
+        if op == "and" and (a.constexpr or b.constexpr) then
+            if a.constexpr then a, b = b, a end
+            if b.value then return a else return b end
+        end
+
+        if op == "or" and (a.constexpr or b.constexpr) then
+            if a.constexpr then a, b = b, a end
+            if b.value then return b else return a end
+        end
+
+        local reg = new_reg(self, "temp", dtype)
+        emit_finit(self, "local " .. reg)
+        local code = {}
+
+        -- TODO: Short-circuit evaluation
+        table_extend(code, a.code)
+        table_extend(code, b.code)
+        return {type=a.type, components=result}
+    end
 
     if logicfuncs[op] ~= nil then
         dtype = "bool"
@@ -305,7 +394,13 @@ function Codegen.call(self, func, params)
     for i,source in ipairs(func.code) do
         for j,param in ipairs(params) do
             -- TODO: Check for inout, out
-            source = string_gsub(source, func_params[j].value, param.value)
+            if param.components ~= nil then
+                for c = 1,#param.components do
+                    source = string_gsub(source, func_params[j].components[c].value, param.components[c].value)
+                end
+            else
+                source = string_gsub(source, func_params[j].value, param.value)
+            end
         end
         source = string_gsub(source, old_label, return_label)
         emit_to_buffer(code, source)
@@ -320,6 +415,13 @@ function Codegen.call(self, func, params)
 end
 
 function Codegen.expr_statement(self, expr)
+    local components = expr.components
+    if components ~= nil then
+        for i=1,#components do
+            expr_statement(self, components[i])
+        end
+        return
+    end
     emit(self, expr.code)
 end
 
@@ -329,9 +431,44 @@ local function try_cast(self, var, dtype)
     end
 end
 
+local function create_register(self, dtype, name, init)
+    local this
+    local size = vector_size[dtype]
+    local reg = new_reg(self, name, dtype)
+    if size == nil or size == 1 then
+        if init == nil then
+            init = {type=dtype, value=0, code=""}
+        end
+        emit_finit(self, "local " .. reg)
+        local lvalue = reg
+        if is_const then lvalue = nil end
+        this = {type=dtype, value=reg, lvalue=lvalue, code=""}
+
+        if init ~= false then Codegen.assign(self, this, init) end
+    else
+        if init == nil then
+            local empty_comp = {type=vec2scalar[dtype], value=0, code=""}
+            init = {type=dtype, components={empty_comp, empty_comp, empty_comp}, code=""}
+        end
+        local scalar_type = vec2scalar[dtype]
+        local components = {}
+        for i=1,size do
+            local comp_reg = reg.."_"..index2swizzle[i]
+            emit_finit(self, "local "..comp_reg)
+            local lvalue = comp_reg
+            if is_const then lvalue = nil end
+            components[i] = {type=scalar_type, value=comp_reg, lvalue=lvalue, code=""}
+        end
+        this = {type=dtype, components=components, code=""}
+
+        if init ~= false then Codegen.assign(self, this, init) end
+    end
+
+    return this
+end
+
 function Codegen.decl_variable(self, name, attributes, dtype, init)
     local locals = self.locals
-    local f_init = self.function_init
     local is_const = table_find(attributes, "const") ~= nil
 
     if is_const and init == nil then
@@ -345,37 +482,30 @@ function Codegen.decl_variable(self, name, attributes, dtype, init)
         end
     end
 
-    local reg = new_reg(self, name, dtype)
-    if is_const then
-        if init.constexpr then -- Assign Constant to it
-            locals[name] = init
-            return
-        end
-        emit_finit(self, "local " .. reg)
-        this = {type=dtype, value=reg, lvalue=reg, code=""}
-        Codegen.assign(self, this, init)
-        this.lvalue = nil -- Make this const
-        locals[name] = this
+    if is_const and init.constexpr then -- Assign Constant to it
+        locals[name] = init
         return
     end
 
-    if init == nil then
-        init = {type=dtype, value=0, code=""}
-    end
-
-    emit_finit(self, "local " .. reg)
-    this = {type=dtype, value=reg, lvalue=reg, code=""}
-    Codegen.assign(self, this, init)
-    locals[name] = this
+    locals[name] = create_register(self, dtype, name, init)
 end
 
 function Codegen.assign(self, dest, src)
+    local components = dest.components
+    if components ~= nil then
+        assert(dest.type == src.type, "type mismatch, cannot assign "..src.type.." value to "..dest.type.." variable")
+        for i=1,#components do
+            Codegen.assign(self, dest.components[i], src.components[i])
+        end
+        return
+    end
+
     fold_code(src)
     if dest.type == "float" and src.type == "int" then
         src = cast_int_to_float(self, src)
     end
-    assert(dest.type == src.type, "type mismatch")
-    assert(dest.lvalue ~= nil, "cannot assign to a constant value")
+    assert(dest.lvalue ~= nil, "cannot assign to a constant value " .. dest.value)
+    assert(dest.type == src.type, "type mismatch, cannot assign "..src.type.." value to "..dest.type.." variable")
     emit(self, src.code)
     emit(self, dest.lvalue .. "=" .. src.value)
 end
@@ -389,11 +519,10 @@ function Codegen.decl_function(self, name, params, attributes, dtype)
     self.function_init = {}
     self.code = {}
     self.exit_label = new_reg(self, name, "exit")
+    self.attributes = attributes
 
     if dtype ~= "void" then
-        local output_reg = new_reg(self, name, dtype)
-        emit_finit(self, "local "..output_reg)
-        self.return_reg = {type=dtype, value=output_reg, code="", lvalue=output_reg}
+        self.return_reg = create_register(self, dtype, name, false)
     else
         self.return_reg = nil
     end
@@ -405,16 +534,34 @@ function Codegen.decl_function(self, name, params, attributes, dtype)
     -- Caller should assign parameters to these registers
     for i,param in ipairs(params) do
         local pname, pattr, ptype = table.unpack(param)
-        local param_reg = new_reg(self, pname, ptype)
-        param[4] = param_reg
-        emit_finit(self, "local "..param_reg)
-        -- By default, all parameters are immutable, excepting they are inout or out
-        if table_find(pattr, "inout") or table_find(pattr, "out") then
-            locals[pname] = {type=ptype, value=param_reg, code="", lvalue=param_reg}
+        local regname = new_reg(self, pname, ptype)
+        local param_reg = regname
+
+        if vector_size[ptype] ~= nil and vector_size[ptype] > 1 then
+            local components = {}
+            local size = vector_size[ptype] 
+            local scalartype = vec2scalar[ptype]
+            for i=1,size do
+                local real_reg = regname.."_"..index2swizzle[i]
+                emit_finit(self, "local "..real_reg)
+                if table_find(pattr, "inout") or table_find(pattr, "out") then
+                    components[#components+1] = {type=scalartype, value=real_reg, code="", lvalue=real_reg}
+                else
+                    components[#components+1] = {type=scalartype, value=real_reg, code=""}
+                end
+            end
+            locals[pname] = {type=ptype, components=components, code=""}
+            parameters[i] = {type=ptype, components=components, code="", attributes=pattr, name=pname}
         else
-            locals[pname] = {type=ptype, value=param_reg, code=""}
+            emit_finit(self, "local "..param_reg)
+            -- By default, all parameters are immutable, excepting they are inout or out
+            if table_find(pattr, "inout") or table_find(pattr, "out") then
+                locals[pname] = {type=ptype, value=param_reg, code="", lvalue=param_reg}
+            else
+                locals[pname] = {type=ptype, value=param_reg, code=""}
+            end
+            parameters[i] = {type=ptype, value=param_reg, code="", attributes=pattr, name=pname}
         end
-        parameters[i] = {type=ptype, value=param_reg, code="", attributes=pattr}
         signature[i+1] = ptype
     end
 
@@ -466,9 +613,20 @@ function Codegen.end_function(self)
         exit_label = self.exit_label,
         signature = self.signature,
         parameters = self.parameters,
+        attributes = self.attributes,
     }
 
     self.functions[self.function_name] = func
+
+    self.function_name = nil
+    self.function_init = nil
+    self.locals = nil
+    self.code = nil
+    self.return_reg = nil
+    self.exit_label = nil
+    self.signature = nil
+    self.parameters = nil
+    self.attributes = nil
 end
 
 function Codegen.number_literal(self, x)
@@ -564,6 +722,15 @@ function Codegen.get_field(self, x, field)
         end
     end
 
+    local size = vector_size[x.type]
+    if size == 1 then
+        assert(field == "x", "invalid field access for type "..x.type)
+        return x
+    else
+        local idx = swizzle2index[field]
+        return x.components[idx]
+    end
+
     error("Not implemented")
 end
 
@@ -647,9 +814,11 @@ local Lexer_next = Lexer.next
 function Codegen.export_code(self, function_name)
     -- Generate Wrapper Code for Functions
     local func = self.functions[function_name]
-    assert(func ~= nil)
+    assert(func ~= nil, "no such function!")
     local code = {}
     local passed_registers = {}
+    local table_extraction = {}
+
     code[1] = "return function("
     for i,param in ipairs(func.parameters) do
         if param.type == "float" or param.type == "int" or param.type == "bool" then
@@ -657,6 +826,24 @@ function Codegen.export_code(self, function_name)
             code[#code+1] = param.value
             code[#code+1] = ","
             passed_registers[param.value] = true
+        elseif vector_size[param.type] ~= nil then
+            local size = vector_size[param.type]
+            local is_table = table_find(param.attributes, "table")
+            local is_array = table_find(param.attributes, "array")
+            if is_table or is_array then
+                local table_name = new_reg(self, param.name, "table")
+                code[#code+1] = table_name
+                code[#code+1] = ","
+                for i=1,size do
+                    if is_table then
+                        table_extraction[#table_extraction+1] = table_concat{param.components[i].value,"=",table_name,".",index2swizzle[i]}
+                    else
+                        table_extraction[#table_extraction+1] = table_concat{param.components[i].value,"=",table_name,"[",i,"]"}
+                    end
+                end
+            else
+                error("Not implemented")
+            end
         else
             error("Not implemented")
         end
@@ -704,11 +891,38 @@ function Codegen.export_code(self, function_name)
         if not blocked then code[#code+1] = line end
     end
 
+    for _,line in ipairs(table_extraction) do
+        emit_to_buffer(code, line)
+    end
+
     table_extend(code, func.code)
     if func.return_reg ~= nil then
-        code[#code+1] = "return " .. func.return_reg.value .. "\n"
+        if func.return_reg.components ~= nil then
+            local components = func.return_reg.components
+            local list = {}
+            if table_find(func.attributes, "table") then
+                for i=1,#components do
+                    list[#list+1] = index2swizzle[i].."=("..tostring(components[i].value).."),"
+                end
+                emit_to_buffer(code, "return {"..table_concat(list).."}")
+            elseif table_find(func.attributes, "array") then
+                for i=1,#components do
+                    list[#list+1] = "("..tostring(components[i].value).."),"
+                end
+                emit_to_buffer(code, "return {"..table_concat(list).."}")
+            else
+                for i=1,#components do
+                    list[#list+1] = "("..tostring(components[i].value)..")"
+                    list[#list+1] = ","
+                end
+                list[#list] = nil
+                emit_to_buffer(code, "return "..table_concat(list))
+            end
+        else
+            emit_to_buffer(code, "return "..func.return_reg.value)
+        end
     end
-    code[#code+1] = "end\n"
+    emit_to_buffer(code, "end")
 
     return table_concat(self.init_code) .. table_concat(code)
 end
