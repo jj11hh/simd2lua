@@ -64,20 +64,15 @@ local swizzle2index = { x = 1, y = 2, z = 3, w = 4, }
 local index2swizzle = { "x", "y", "z", "w" }
 
 local vec2scalar = {
-    float  = "float",
-    float1 = "float",
-    float2 = "float",
-    float3 = "float",
+    float  = "float", float1 = "float", float2 = "float", float3 = "float",
+    int  = "int", int1 = "int", int2 = "int", int3 = "int",
+    bool  = "bool", bool1 = "bool", bool2 = "bool", bool3 = "bool", 
+}
 
-    int  = "int",
-    int1 = "int",
-    int2 = "int",
-    int3 = "int",
-
-    bool  = "bool",
-    bool1 = "bool",
-    bool2 = "bool",
-    bool3 = "bool",
+local scalar2vec = {
+    float = {"float", "float2", "float3", "float4"},
+    int = {"int", "int2", "int3", "int4"},
+    bool = {"bool", "bool2", "bool3", "bool4"},
 }
 
 local function new_reg(self, tag, dtype)
@@ -243,8 +238,75 @@ local logicfuncs = {
     ["or"] = function(a, b) return a or b end,
 }
 
+local unaryfuncs = {
+    ["not"] = function(x) return not x end,
+    ["-"] = function(x) return - x end,
+    ["#"] = function(x) return # x end,
+    ["~"] = function(x) return ~ x end,
+}
+
 local function get_component(vector, component)
     return vector.components[component]
+end
+
+function Codegen.unary(self, op, x)
+    local dtype
+    local xtype = x.type
+    local size = vector_size[xtype]
+    if size == nil then
+        size = 1
+    end
+
+    if op == "#" then
+        return {type="int", value=size, code=""}
+    end
+
+    if size > 1 then
+        local components = {}
+        for i=1,size do
+            components[#components+1] = Codegen.unary(self, op, get_component(x, i))
+            assert(components[i].type == components[1].type)
+        end
+
+        local dtype = scalar2vec[components[1].type][size]
+        assert(dtype ~= nil)
+        return {type=dtype, components=components}
+    end
+
+    local code = {}
+    table_extend(code, x.code)
+
+    local reg = new_reg(self, "temp", xtype)
+    emit_finit(self, "local " .. reg)
+
+    if op == "-" then
+        assert(xtype == "float" or xtype == "int", "operator \"-\" can only apply to numbers")
+        if x.constexpr then
+            return {type=xtype, value=-x.value, code="", constexpr=true}
+        end
+        emit_to_buffer(code, reg.."=-("..tostring(x.value)..")")
+        return {type=xtype, value=reg, code=code}
+    end
+
+    if op == "~" then
+        assert(xtype == "int", "operator \"~\" can only apply to integers")
+        if x.constexpr then
+            return {type=xtype, value=~x.value, code="", constexpr=true}
+        end
+        emit_to_buffer(code, reg.."=~("..tostring(x.value)..")")
+        return {type=xtype, value=reg, code=code}
+    end
+
+    if op == "not" then
+        dtype = "bool"
+        if x.constexpr then
+            return {type=dtype, value=not x.value, code="", constexpr=true}
+        end
+        emit_to_buffer(code, reg.."=not("..tostring(x.value)..")")
+        return {type=dtype, value=reg, code=code}
+    end
+
+    error("Unsupported unary operator: "..op)
 end
 
 function Codegen.binary(self, op, a, b)

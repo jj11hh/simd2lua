@@ -7,13 +7,16 @@ function Compiler.compile(code, filename)
     if filename == nil then filename = "main" end
     local cg = Codegen.new()
     local parser = Parser.new(code, cg, filename)
+    local message = nil
 
     local function on_error(info)
-        print("Complation Aborted! \n" .. info .. "\nfile: " .. filename .. "\nline:" 
-            .. parser.line .. "," .. parser.line_pos .. "\n" .. debug.traceback())
+        message = "Complation Aborted! \n" .. info .. "\nfile: " .. filename .. "\nline:" 
+            .. parser.line .. "," .. parser.line_pos .. "\n" .. debug.traceback()
     end
 
     xpcall(function() Parser.parse(parser) end, on_error)
+
+    assert(message == nil, message)
 
     return cg
 end
@@ -35,7 +38,7 @@ end
 
 function normalize(p <array> :float3) :float3
     local sum :float = math.sqrt(dot(p, p))
-    return p / sum
+    return -p / sum
 end
 ]]
 
