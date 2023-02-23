@@ -9,6 +9,7 @@ local string_find = string.find
 local string_match = string.match
 local string_gsub = string.gsub
 local string_sub = string.sub
+local math_type = math.type
 
 local Codegen = {}
 
@@ -692,7 +693,7 @@ function Codegen.end_function(self)
 end
 
 function Codegen.number_literal(self, x)
-    if string_find(tostring(x), "[e%.]") == nil then
+    if math_type(x) == "integer" then
         return {type="int", value=x, code="", constexpr=true}
     else
         return {type="float", value=x, code="", constexpr=true}
