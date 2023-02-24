@@ -84,6 +84,7 @@ end
 
 local function emit_to_buffer(buf, code, indent)
     if type(code) == "table" then
+        assert(code.unique == nil)
         for i=1,#code do emit_to_buffer(buf, code[i], indent) end
         return
     end
@@ -104,30 +105,45 @@ local function emit_finit(self, code)
     emit_to_buffer(self.function_init, code)
 end
 
-local function emit(self, code)
+local function emit(self, code, indent)
     assert(self.code ~= nil, "cannot emit code outside functions")
 
     local level = self.indent
     local char = self.indent_char
-    local indent = ""
+    local indent = nil
 
-    for i =1,level do
-        indent = indent .. char
+    if indent == nil then
+        indent = ""
+        for i=1,level do indent = indent .. char end
+    end
+
+    if type(code) == "table" then
+        -- If a unique code is emitted, mark it as false
+        if code.unique == false then 
+            return 
+        elseif code.unique == true then 
+            code.unique = false 
+        end
+
+        for i,chunk in ipairs(code) do
+            emit(self, chunk, indent)
+        end
+        return
     end
 
     emit_to_buffer(self.code, code, indent)
 end
 
 local function fold_code(var)
-    local var_code = var.code
-    if var_code == nil or #var_code == 0 then return end
-    local last_code = var_code[#var_code]
-    local pattern = "^"..tostring(var.value).."="
-    if string_match(last_code, pattern) then
-        local substr = string_sub(last_code, #pattern, #last_code)
-        var_code[#var_code] = nil
-        var.value = string_gsub(substr, "\n", "")
-    end
+    -- local var_code = var.code
+    -- if var_code == nil or #var_code == 0 then return end
+    -- local last_code = var_code[#var_code]
+    -- local pattern = "^"..tostring(var.value).."="
+    -- if string_match(last_code, pattern) then
+    --     local substr = string_sub(last_code, #pattern, #last_code)
+    --     var_code[#var_code] = nil
+    --     var.value = string_gsub(substr, "\n", "")
+    -- end
 end
 
 local function use_feature(self, mod, feature, dtype)
@@ -176,7 +192,7 @@ local function cast_float_to_int(self, x)
     local ceil_func = use_feature(self, "math", "ceil", "builtin").value
     emit_finit(self, "local " .. reg)
     local code = {}
-    table_extend(code, x.code)
+    code[1] = x.code
     emit_to_buffer(code, "if " .. x.value .. ">0 then ")
     emit_to_buffer(code, reg .. "=" .. floor_func .. "(" .. x.value .. ")")
     emit_to_buffer(code, "else")
@@ -354,8 +370,8 @@ function Codegen.binary(self, op, a, b)
         local code = {}
 
         -- TODO: Short-circuit evaluation
-        table_extend(code, a.code)
-        table_extend(code, b.code)
+        code[#code+1] = a.code
+        code[#code+1] = b.code
         return {type=a.type, components=result}
     end
 
@@ -382,8 +398,8 @@ function Codegen.binary(self, op, a, b)
         local code = {}
 
         -- TODO: Short-circuit evaluation
-        table_extend(code, a.code)
-        table_extend(code, b.code)
+        code[#code+1] = a.code
+        code[#code+1] = b.code
         emit_to_buffer(code, reg.."="..tostring(a.value).." "..op.." "..tostring(b.value))
         return {type=dtype, value=reg, code=code}
     end
@@ -419,8 +435,8 @@ function Codegen.binary(self, op, a, b)
     emit_finit(self, "local " .. reg)
 
     local code = {}
-    table_extend(code, a.code)
-    table_extend(code, b.code)
+    code[#code+1] = a.code
+    code[#code+1] = b.code
     emit_to_buffer(code, reg.."="..tostring(a.value).." "..op.." "..tostring(b.value))
 
     return {type=dtype, value=reg, code=code}
@@ -450,7 +466,7 @@ function Codegen.call(self, func, params)
     local code = {}
 
     for i,param in ipairs(params) do
-        emit_to_buffer(code, param.code)
+        code[i] = param.code
     end
 
     -- Copy Code
@@ -472,9 +488,22 @@ function Codegen.call(self, func, params)
     local return_reg = func.return_reg
     if return_reg == nil then
         return {type="void", code=code, value=""}
-    else
+    end
+
+    if return_reg.components == nil then
         return {type=return_reg.type, code=code, value=return_reg.value}
     end
+
+    -- Make a marker to code snippet, if any components of this value emitted, other code should be blocked
+    code.unique = true
+    local components = {}
+    local src_components = return_reg.components
+    for i=1,#src_components do
+        components[i] = {type=src_components[i].type, value=src_components[i].value, code=code}
+    end
+
+    print(table2sexpr(components))
+    return {type=return_reg.type, components=components}
 end
 
 function Codegen.expr_statement(self, expr)
@@ -557,6 +586,7 @@ function Codegen.assign(self, dest, src)
     local components = dest.components
     if components ~= nil then
         assert(dest.type == src.type, "type mismatch, cannot assign "..src.type.." value to "..dest.type.." variable")
+        -- print(table2sexpr(src))
         for i=1,#components do
             Codegen.assign(self, dest.components[i], src.components[i])
         end
@@ -740,7 +770,7 @@ local function make_codegen(func) -- TODO: Cache Codegen
         local all_constants = true
 
         for i,param in ipairs(params) do
-            table_extend(codes, param.code)
+            codes[#codes+1] = param.code
             args[i] = param.value
             if not param.constexpr then all_constants = false end
         end
@@ -846,6 +876,7 @@ function Codegen.begin_elseif(self, cond)
     fold_code(cond)
     if #cond.code == 0 then
         self.indent = self.indent - 1
+        emit(self, cond.code)
         emit(self, "elseif "..tostring(cond.value).." then")
         self.indent = self.indent + 1
         return
@@ -881,6 +912,7 @@ function Codegen.export_code(self, function_name)
     local code = {}
     local passed_registers = {}
     local table_extraction = {}
+    local table_storation = {}
 
     code[1] = "return function("
     for i,param in ipairs(func.parameters) do
@@ -901,11 +933,28 @@ function Codegen.export_code(self, function_name)
                 local table_name = new_reg(self, param.name, "table")
                 code[#code+1] = table_name
                 code[#code+1] = ","
-                for i=1,size do
-                    if is_table then
-                        table_extraction[#table_extraction+1] = table_concat{components[i].value,"=",table_name,".",index2swizzle[i]}
-                    else
-                        table_extraction[#table_extraction+1] = table_concat{components[i].value,"=",table_name,"[",i,"]"}
+
+                if table_find(attrs, "out") == nil then
+                    for i=1,size do
+                        if is_table then
+                            table_extraction[#table_extraction+1] = 
+                                table_concat{components[i].value,"=",table_name,".",index2swizzle[i]}
+                        else
+                            table_extraction[#table_extraction+1] = 
+                                table_concat{components[i].value,"=",table_name,"[",i,"]"}
+                        end
+                    end
+                end
+
+                if table_find(attrs, "out") ~= nil or table_find(attrs, "inout") then
+                    for i=1,size do
+                        if is_table then
+                            table_storation[#table_storation+1] =
+                                table_concat{table_name,".",index2swizzle[i],"=(",components[i].value,")"}
+                        else
+                            table_storation[#table_storation+1] =
+                                table_concat{table_name,"[",i,"]=(",components[i].value,")"}
+                        end
                     end
                 end
             else
@@ -961,8 +1010,11 @@ function Codegen.export_code(self, function_name)
     for _,line in ipairs(table_extraction) do
         emit_to_buffer(code, line)
     end
-
     table_extend(code, func.code)
+    for _,line in ipairs(table_storation) do
+        emit_to_buffer(code, line)
+    end
+
     if func.return_reg ~= nil then
         if func.return_reg.components ~= nil then
             local components = func.return_reg.components

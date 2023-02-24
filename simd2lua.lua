@@ -40,12 +40,24 @@ function normalize(p <array> :float3) :float3
     local sum :float = math.sqrt(dot(p, p))
     return -p / sum
 end
+
+function float3(x:float,y:float,z:float) :float3
+    local v :float3
+    v.x=x v.y=y v.z=z
+    return v
+end
+
+function add_one(p <array out> :float3) :void
+    local zero :float3 = float3(1.0,2.0,3.0)
+    p = zero
+end
 ]]
 
 local result = Compiler.compile(testcode)
 print(result:export_code("dot"))
 print(result:export_code("normalize"))
 print(result:export_code("smoothstep"))
+print(result:export_code("add_one"))
 local smoothstep = result:export("smoothstep")
 local dot = result:export("dot")
 local normalize = result:export("normalize")
@@ -55,6 +67,6 @@ local table2sexpr = Utils.table2sexpr
 
 print(smoothstep(40, 50, 46))
 print(dot({1,2,3}, {1,2,3}))
-print(table2sexpr(normalize({1, 2, 3})))
+print(normalize({1, 2, 3}))
 
 return Compiler

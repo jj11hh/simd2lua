@@ -20,9 +20,9 @@ local unary_operators = {
 
 local valid_types = {
     void = true,
-    table = true, array = true,
     float = true, float2 = true, float3 = true, float4 = true,
     int = true, int2 = true, int3 = true, int4 = true,
+    bool = true, bool2 = true, bool3 = true, bool4 = true,
     -- TODO: Matrix types
 }
 
