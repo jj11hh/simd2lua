@@ -950,10 +950,10 @@ function Codegen.export_code(self, function_name)
                     for i=1,size do
                         if is_table then
                             table_storation[#table_storation+1] =
-                                table_concat{table_name,".",index2swizzle[i],"=(",components[i].value,")"}
+                                table_concat{table_name,".",index2swizzle[i],"=",components[i].value}
                         else
                             table_storation[#table_storation+1] =
-                                table_concat{table_name,"[",i,"]=(",components[i].value,")"}
+                                table_concat{table_name,"[",i,"]=",components[i].value}
                         end
                     end
                 end
