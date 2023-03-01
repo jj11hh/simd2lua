@@ -71,6 +71,7 @@ local operators = {
     ["#"] = false,
     ["&"] = false,
     ["|"] = false,
+    [":"] = {"::"},
 }
 
 local constants = {

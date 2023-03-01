@@ -135,15 +135,7 @@ local function emit(self, code, indent)
 end
 
 local function fold_code(var)
-    -- local var_code = var.code
-    -- if var_code == nil or #var_code == 0 then return end
-    -- local last_code = var_code[#var_code]
-    -- local pattern = "^"..tostring(var.value).."="
-    -- if string_match(last_code, pattern) then
-    --     local substr = string_sub(last_code, #pattern, #last_code)
-    --     var_code[#var_code] = nil
-    --     var.value = string_gsub(substr, "\n", "")
-    -- end
+    -- Deprecated
 end
 
 local function use_feature(self, mod, feature, dtype)
@@ -839,11 +831,15 @@ function Codegen.begin_for(self, name, begin, ends, step)
     emit(self, step.code)
     emit(self, "for " .. reg .. "=" .. begin.value .. "," .. ends.value .. "," .. step.value .. " do")
     self.indent = self.indent + 1
+    local stack = self.while_stack
+    stack[#stack+1] = {} -- Special mark for we are looping
 end
 
 function Codegen.end_for(self)
     self.indent = self.indent - 1
     emit(self, "end")
+    local stack = self.while_stack
+    stack[#stack+1] = cond
 end
 
 function Codegen.begin_while(self, cond)
@@ -899,6 +895,20 @@ function Codegen.end_if(self)
         self.indent = self.indent - 1
         emit(self, "end")
     end
+end
+
+function Codegen.handle_break(self)
+    local stack = self.while_stack
+    assert(#stack > 0, "cannot break outside a loop")
+    emit(self, "break")
+end
+
+function Codegen.handle_goto(self, label)
+    error("goto is not supported")
+end
+
+function Codegen.label(self, label)
+    -- Do nothing, since goto is not supported
 end
 
 local Lexer = require("lexer")

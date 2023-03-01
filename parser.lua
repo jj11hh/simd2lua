@@ -236,6 +236,18 @@ parse_code_block = function(self, ends, ends_with_nil)
             end
             -- Control flow should terminated here
             syntax_assert(self, table_find(ends, self.current) ~= nil, "end of block expected")
+        elseif token == "break" then
+            take(self)
+            handler:handle_break()
+        elseif token == "goto" then
+            take(self)
+            local label = take(self)
+            handler:handle_goto(label)
+        elseif token == "::" then
+            take(self)
+            local label = take(self)
+            handler:label(label)
+            expect_and_take(self, "::")
         else -- Function call or assignment
             local lvalue = parse_expr(self)
             if self.current == "=" then -- Assignment
