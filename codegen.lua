@@ -445,6 +445,14 @@ function Codegen.binary(self, op, a, b)
     if a.constexpr and b.constexpr then -- Constant Folding
         return {type=dtype, value=func(a.value, b.value), code="", constexpr=true}
     end
+    
+    if op == "//" and b.constexpr and b.value == 0 then
+        error("attempt to divide by zero")
+    end
+    
+    if (op == "*" or op == "&") and a.type == "int" and ((a.constexpr and a.value == 0) or (b.constexpr and b.value == 0)) then
+        return {type=dtype, value=0, code="", constexpr=true}
+    end
 
     local reg = new_reg(self, "temp", dtype)
     emit_finit(self, "local " .. reg)
