@@ -537,7 +537,7 @@ local function try_cast(self, var, dtype)
     end
 end
 
-local function create_register(self, dtype, name, init)
+local function create_register(self, dtype, name, init, is_const)
     local this
     local size = vector_size[dtype]
     local reg = new_reg(self, name, dtype)
@@ -556,16 +556,18 @@ local function create_register(self, dtype, name, init)
         local scalar_type = vec2scalar[dtype]
         local components = {}
         for i=1,size do
-            local comp_reg = reg.."_"..index2swizzle[i]
-            emit_finit(self, "local "..comp_reg)
-            local lvalue = comp_reg
-            if is_const then lvalue = nil end
-            components[i] = {type=scalar_type, value=comp_reg, lvalue=lvalue, code=""}
+            if is_const and init ~= false and init.components[i].constexpr then
+                components[i] = init.components[i]
+            else
+                local comp_reg = reg.."_"..index2swizzle[i]
+                emit_finit(self, "local "..comp_reg)
+                local lvalue = comp_reg
+                if is_const then lvalue = nil end
+                components[i] = {type=scalar_type, value=comp_reg, lvalue=lvalue, code=""}
+                if init ~= false then Codegen.assign(self, components[i], init.components[i]) end
+            end
         end
         this = {type=dtype, components=components, code=""}
-
-        print(table2sexpr(init))
-        if init ~= false then Codegen.assign(self, this, init) end
     end
 
     return this
@@ -591,7 +593,7 @@ function Codegen.decl_variable(self, name, attributes, dtype, init)
         return
     end
 
-    locals[name] = create_register(self, dtype, name, init)
+    locals[name] = create_register(self, dtype, name, init, is_const)
 end
 
 function Codegen.assign(self, dest, src)

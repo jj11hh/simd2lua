@@ -42,8 +42,8 @@ function normalize(p <array> :float3) :float3
 end
 
 function add_one(p <array out> :float3) :void
-    local zero :float3 = float3(1.0,2.0,3.0)
-    p = zero
+    local vec <const> :float3 = float3(1.0,2.0,3.0)
+    p = vec + float3(1.0, 1.0, 1.0)
 end
 ]]
 
