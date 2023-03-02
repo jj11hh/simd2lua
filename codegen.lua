@@ -316,7 +316,7 @@ function Codegen.unary(self, op, x)
         if x.constexpr then
             return {type=xtype, value=-x.value, code="", constexpr=true}
         end
-        emit_to_buffer(code, reg.."=-("..tostring(x.value)..")")
+        emit_to_buffer(code, reg.."=-"..tostring(x.value))
         return {type=xtype, value=reg, code=code}
     end
 
@@ -325,7 +325,7 @@ function Codegen.unary(self, op, x)
         if x.constexpr then
             return {type=xtype, value=~x.value, code="", constexpr=true}
         end
-        emit_to_buffer(code, reg.."=~("..tostring(x.value)..")")
+        emit_to_buffer(code, reg.."=~"..tostring(x.value))
         return {type=xtype, value=reg, code=code}
     end
 
@@ -334,7 +334,7 @@ function Codegen.unary(self, op, x)
         if x.constexpr then
             return {type=dtype, value=not x.value, code="", constexpr=true}
         end
-        emit_to_buffer(code, reg.."=not("..tostring(x.value)..")")
+        emit_to_buffer(code, reg.."=not"..tostring(x.value))
         return {type=dtype, value=reg, code=code}
     end
 
