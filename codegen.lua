@@ -380,14 +380,29 @@ function Codegen.binary(self, op, a, b)
             if b.value then return b else return a end
         end
 
-        local reg = new_reg(self, "temp", dtype)
+        local reg = new_reg(self, op, dtype)
         emit_finit(self, "local " .. reg)
         local code = {}
+        local result = {type=dtype, value=reg, code=code}
+        if op == "and" then
+            code[#code+1] = a.code
+            code[#code+1] = "if "..a.value.." then\n"
+            code[#code+1] = b.code
+            code[#code+1] = reg.."="..b.value.."\n"
+            code[#code+1] = "else\n"
+            code[#code+1] = reg.."=false\n"
+            code[#code+1] = "end\n"
+        else
+            code[#code+1] = a.code
+            code[#code+1] = "if "..a.value.." then\n"
+            code[#code+1] = reg.."=true\n"
+            code[#code+1] = "else\n"
+            code[#code+1] = b.code
+            code[#code+1] = reg.."="..b.value.."\n"
+            code[#code+1] = "end\n"
+        end
 
-        -- TODO: Short-circuit evaluation
-        code[#code+1] = a.code
-        code[#code+1] = b.code
-        return {type=a.type, components=result}
+        return result
     end
 
     if logicfuncs[op] ~= nil then

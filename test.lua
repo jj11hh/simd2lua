@@ -24,6 +24,14 @@ function add_one(p <array out> :float3) :void
     local vec <const> :float3 = float3(1.0,2.0,3.0)
     p = vec + float3(1.0, 1.0, 1.0)
 end
+
+function test_const_folding(i <array> :int3) :int3
+    return i * int3(1, 0, 1)
+end
+
+function test_short_circuit(a :bool, b :int) :bool
+    return a and b > 0
+end
 ]]
 
 local result = Compiler.compile(testcode)
@@ -31,6 +39,8 @@ print(result:export_code("dot"))
 print(result:export_code("normalize"))
 print(result:export_code("smoothstep"))
 print(result:export_code("add_one"))
+print(result:export_code("test_const_folding"))
+print(result:export_code("test_short_circuit"))
 local smoothstep = result:export("smoothstep")
 local dot = result:export("dot")
 local normalize = result:export("normalize")
