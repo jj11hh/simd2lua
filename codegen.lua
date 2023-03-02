@@ -202,6 +202,13 @@ end
 
 local builtin_functions = {}
 
+function builtin_functions.bool(self, params)
+    assert(#params == 1)
+    local input = params[1]
+    assert(input.type == "int" or input.type == "float" or input.type == "bool")
+    return input
+end
+
 function builtin_functions.int(self, params)
     assert(#params == 1)
     local input = params[1]
@@ -218,6 +225,22 @@ function builtin_functions.float(self, params)
         return input
     end
     return cast_int_to_float(self, input)
+end
+
+local stypes = {"bool", "int", "float"}
+for itype=1,#stypes do
+    local stype = stypes[itype]
+    for i=2,4 do
+        local vtype = stype..i
+        builtin_functions[vtype] = function (self, params)
+            assert(#params == i, "function "..vtype.." accept "..i.." parameters, got "..#params)
+            local components = {}
+            for j=1,i do
+                components[j] = builtin_functions[stype](self, {params[j]})
+            end
+            return {type=vtype, components=components, code=""}
+        end
+    end
 end
 
 local binfuncs = {
@@ -494,7 +517,6 @@ function Codegen.call(self, func, params)
         components[i] = {type=src_components[i].type, value=src_components[i].value, code=code}
     end
 
-    print(table2sexpr(components))
     return {type=return_reg.type, components=components}
 end
 
@@ -519,6 +541,7 @@ local function create_register(self, dtype, name, init)
     local this
     local size = vector_size[dtype]
     local reg = new_reg(self, name, dtype)
+    assert(init ~= nil, "cannot declare a variable without initial value")
     if size == nil or size == 1 then
         if init == nil then
             init = {type=dtype, value=0, code=""}
@@ -530,10 +553,6 @@ local function create_register(self, dtype, name, init)
 
         if init ~= false then Codegen.assign(self, this, init) end
     else
-        if init == nil then
-            local empty_comp = {type=vec2scalar[dtype], value=0, code=""}
-            init = {type=dtype, components={empty_comp, empty_comp, empty_comp}, code=""}
-        end
         local scalar_type = vec2scalar[dtype]
         local components = {}
         for i=1,size do
@@ -545,6 +564,7 @@ local function create_register(self, dtype, name, init)
         end
         this = {type=dtype, components=components, code=""}
 
+        print(table2sexpr(init))
         if init ~= false then Codegen.assign(self, this, init) end
     end
 

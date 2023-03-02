@@ -41,12 +41,6 @@ function normalize(p <array> :float3) :float3
     return -p / sum
 end
 
-function float3(x:float,y:float,z:float) :float3
-    local v :float3
-    v.x=x v.y=y v.z=z
-    return v
-end
-
 function add_one(p <array out> :float3) :void
     local zero :float3 = float3(1.0,2.0,3.0)
     p = zero
