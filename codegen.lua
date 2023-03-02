@@ -326,8 +326,8 @@ function Codegen.binary(self, op, a, b)
     local size_b = vector_size[b.type]
 
     assert(size_a == size_b or size_a ~= 1 or size_b ~= 1, "vector width mismatch")
-    assert(vec2scalar[a.type] == vec2scalar[b.type], "vector type mismatch")
     if size_a ~= nil and size_b ~= nil and (size_a > 1 or size_b > 1) then
+        assert(vec2scalar[a.type] == vec2scalar[b.type], "vector type mismatch")
         local result = {}
         if size_a > 1 and size_b > 1 then
             for i=1,size_a do result[#result+1] = Codegen.binary(self, op, get_component(a, i), get_component(b, i)) end
@@ -726,9 +726,24 @@ function Codegen.bool_literal(self, x)
     return {type="bool", value=x, code="", constexpr=true}
 end
 
+local function search_local(locals, name)
+    local found = locals[name]
+    if found ~= nil then
+        return found
+    end
+    
+    local prev = locals.__prev_locals
+    if prev ~= nil then
+        return search_local(prev, name)
+    end
+    
+    return nil
+end
+
 function Codegen.identifier(self, x)
-    if self.locals[x] ~= nil then
-        return self.locals[x]
+    local localvar = search_local(self.locals, x)
+    if localvar ~= nil then
+        return localvar
     end
 
     if self.globals[x] ~= nil then
@@ -825,36 +840,35 @@ function Codegen.begin_for(self, name, begin, ends, step)
     fold_code(step)
     assert(begin.type == "int" and ends.type == "int" and step.type == "int", "begin, end and step should be integer value")
     local reg = new_reg(self, name, "int")
-    self.locals[name] = {type="int", value=reg, code=""}
+    local locals = self.locals
+    self.locals = {__prev_locals = locals, __scope_name = "for"}
+    locals[name] = {type="int", value=reg, code=""}
     emit(self, begin.code)
     emit(self, ends.code)
     emit(self, step.code)
     emit(self, "for " .. reg .. "=" .. begin.value .. "," .. ends.value .. "," .. step.value .. " do")
     self.indent = self.indent + 1
-    local stack = self.while_stack
-    stack[#stack+1] = {} -- Special mark for we are looping
 end
 
 function Codegen.end_for(self)
     self.indent = self.indent - 1
     emit(self, "end")
-    local stack = self.while_stack
-    stack[#stack+1] = cond
+    self.locals = self.locals.__prev_locals
 end
 
 function Codegen.begin_while(self, cond)
     fold_code(cond)
     emit(self, cond.code)
     emit(self, "while " .. tostring(cond.value) .. " do")
-    local stack = self.while_stack
-    stack[#stack+1] = cond
+    local locals = self.locals
+    self.locals = {__prev_locals = locals, __scope_name = "while", __cond = cond}
     self.indent = self.indent + 1
 end
 
 function Codegen.end_while(self)
     local stack = self.while_stack
-    local cond = stack[#stack]
-    stack[#stack] = nil
+    local cond = self.locals.__cond
+    self.locals = self.locals.__prev_locals
     emit(self, cond.code)
     self.indent = self.indent - 1
     emit(self, "end")
@@ -864,42 +878,50 @@ function Codegen.begin_if(self, cond)
     fold_code(cond)
     emit(self, cond.code)
     emit(self, "if "..tostring(cond.value).." then")
+    self.locals = {__prev_locals = self.locals, __scope_name = "if"}
     self.indent = self.indent + 1
-    self.if_level = self.if_level + 1
 end
 
 function Codegen.begin_elseif(self, cond)
     fold_code(cond)
-    if #cond.code == 0 then
-        self.indent = self.indent - 1
-        emit(self, cond.code)
-        emit(self, "elseif "..tostring(cond.value).." then")
-        self.indent = self.indent + 1
-        return
-    end
+    self.locals = self.locals.__prev_locals
+
+    -- Here need two ends to end then else and if
+    self.locals = {__prev_locals = self.locals, __scope_name = "elseif", __iflevel = 2}
 
     self.indent = self.indent - 1
     emit(self, "else")
     self.indent = self.indent + 1
-    Codegen.begin_if(self, cond)
+    emit(self, cond.code)
+    emit(self, "if "..tostring(cond.value).." then")
+    self.indent = self.indent + 1
 end
 
 function Codegen.begin_else(self)
+
+    if self.locals.__iflevel == 2 then
+        self.indent = self.indent - 1
+        emit(self, "end")
+    end
+
     self.indent = self.indent - 1
+    self.locals = self.locals.__prev_locals
+    self.locals = {__prev_locals = self.locals, __scope_name = "else"}
     emit(self, "else")
     self.indent = self.indent + 1
 end
 
 function Codegen.end_if(self)
-    for i=1,self.if_level do
+    for i=1,self.locals.__iflevel do
         self.indent = self.indent - 1
         emit(self, "end")
     end
+    self.locals = self.locals.__prev_locals
 end
 
 function Codegen.handle_break(self)
-    local stack = self.while_stack
-    assert(#stack > 0, "cannot break outside a loop")
+    local scope_name = self.locals.__scope_name
+    assert(scope_name == "for" or scope_name == "while", "cannot break outside a loop")
     emit(self, "break")
 end
 
@@ -1107,7 +1129,8 @@ local function test_codegen()
             end
 
             if e > 3.4 then
-                e = 1.0
+                local qqq :float = e
+                e = 1.0 + qqq
             elseif e > 2.1 then
                 return
             end
@@ -1130,7 +1153,7 @@ local function test_codegen()
         print("file: " .. parser.filename)
         print("line: " .. parser.line)
     else
-        print(cg:export_code("smoothstep"))
+        print(cg:export_code("test_func"))
         local smoothstep = cg:export("smoothstep")
         print(smoothstep(10, 20, 18))
     end
