@@ -32,6 +32,23 @@ end
 function test_short_circuit(a :bool, b :int) :bool
     return a and b > 0
 end
+
+function test_block(a :int, b :int) :int
+    local sum :int = 0
+    local sumb :int = 0
+    for i=1,b do
+        sum = sum + a
+        if sum > 1000 then
+            sumb = sumb + 100
+        elseif sum > 100 then
+            sumb = sumb + 1022
+        else
+            sumb = 0
+        end
+    end
+    
+    return sumb
+end
 ]]
 
 local result = Compiler.compile(testcode)
@@ -41,6 +58,7 @@ print(result:export_code("smoothstep"))
 print(result:export_code("add_one"))
 print(result:export_code("test_const_folding"))
 print(result:export_code("test_short_circuit"))
+print(result:export_code("test_block"))
 local smoothstep = result:export("smoothstep")
 local dot = result:export("dot")
 local normalize = result:export("normalize")

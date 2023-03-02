@@ -887,7 +887,7 @@ function Codegen.begin_for(self, name, begin, ends, step)
     fold_code(begin)
     fold_code(ends)
     fold_code(step)
-    assert(begin.type == "int" and ends.type == "int" and step.type == "int", "begin, end and step should be integer value")
+    assert(begin.type == "int" and ends.type == "int" and step.type == "int", "'for' limit must be a integer")
     local reg = new_reg(self, name, "int")
     local locals = self.locals
     self.locals = {__prev_locals = locals, __scope_name = "for"}
@@ -927,7 +927,7 @@ function Codegen.begin_if(self, cond)
     fold_code(cond)
     emit(self, cond.code)
     emit(self, "if "..tostring(cond.value).." then")
-    self.locals = {__prev_locals = self.locals, __scope_name = "if"}
+    self.locals = {__prev_locals = self.locals, __scope_name = "if", __iflevel = 1}
     self.indent = self.indent + 1
 end
 
@@ -955,12 +955,13 @@ function Codegen.begin_else(self)
 
     self.indent = self.indent - 1
     self.locals = self.locals.__prev_locals
-    self.locals = {__prev_locals = self.locals, __scope_name = "else"}
+    self.locals = {__prev_locals = self.locals, __scope_name = "else", __iflevel = 1}
     emit(self, "else")
     self.indent = self.indent + 1
 end
 
 function Codegen.end_if(self)
+    assert(self.locals.__iflevel ~= nil)
     for i=1,self.locals.__iflevel do
         self.indent = self.indent - 1
         emit(self, "end")
@@ -1146,7 +1147,7 @@ function Codegen.new()
         init_code = {},
         if_level = 0,
         indent = 0,
-        indent_char = 0,
+        indent_char = "  ",
     }
 
     setmetatable(self, Codegen)
