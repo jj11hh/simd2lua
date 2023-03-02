@@ -454,6 +454,10 @@ function Codegen.binary(self, op, a, b)
         return {type=dtype, value=0, code="", constexpr=true}
     end
 
+    if op == "*" and a.type == "int" and ((a.constexpr and a.value == 1) or (b.constexpr and b.value == 1)) then
+        return (a.constexpr and b) or a
+    end
+
     local reg = new_reg(self, "temp", dtype)
     emit_finit(self, "local " .. reg)
 
