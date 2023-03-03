@@ -841,12 +841,12 @@ local function make_codegen(func) -- TODO: Cache Codegen
 
         local reg = new_reg(self, funcname, return_type)
         if all_constants and funcimpl ~= nil then
-            return { type="float", value=funcimpl(table.unpack(args)), code="", constexpr=true }
+            return { type=return_type, value=funcimpl(table.unpack(args)), code="", constexpr=true }
         end
 
         emit_finit(self, "local " .. reg)
         emit_to_buffer(codes, reg.."="..funcname.."("..table.concat(args, ",")..")")
-        return { type="float", value=reg, code=codes }
+        return { type=return_type, value=reg, code=codes }
     end
 end
 
